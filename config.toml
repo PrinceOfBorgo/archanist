@@ -1,0 +1,7 @@
+schema = 1
+
+# Log level: trace | debug | info | warn | error
+log_level = "info"
+
+# Path to the state file (relative to this config file, or absolute).
+state_file = "state.toml"
