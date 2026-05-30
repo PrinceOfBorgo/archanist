@@ -12,6 +12,9 @@ log_level = "info"
 
 # Path to the state file (relative to this config file, or absolute).
 state_file = "state.toml"
+
+# Directory containing component recipe files (relative to this config file, or absolute).
+# components_dir = "components"
 "#;
 
 #[derive(Parser)]
@@ -40,6 +43,8 @@ enum Commands {
     Init,
     /// Print the parsed configuration (useful for troubleshooting).
     Config,
+    /// List configured components.
+    List,
     /// Print current state.
     Status,
 }
@@ -54,10 +59,15 @@ fn main() -> Result<()> {
             println!("{:#?}", cfg);
             Ok(())
         }
+        Commands::List => {
+            let cfg = load_and_setup(&cli)?;
+            run_list(&cfg);
+            Ok(())
+        }
         Commands::Status => {
             let cfg = load_and_setup(&cli)?;
             let state = state::ArchanistState::load(&cfg.state_path())?;
-            state.print_summary();
+            run_status(&cfg, &state);
             Ok(())
         }
     }
@@ -100,4 +110,56 @@ fn run_init(config_path: &Path) -> Result<()> {
         .with_context(|| format!("Failed to write {}", config_path.display()))?;
     println!("Created {}", config_path.display());
     Ok(())
+}
+
+fn run_list(cfg: &config::ArchanistConfig) {
+    if cfg.components.is_empty() {
+        println!(
+            "(no components configured; looked in {})",
+            cfg.components_dir.display()
+        );
+        return;
+    }
+    for name in cfg.component_names() {
+        let comp = &cfg.components[&name];
+        println!("=== {name} ===");
+        if let Some(desc) = &comp.description {
+            println!("  description: {desc}");
+        }
+        println!("  steps ({}):", comp.steps.len());
+        for step in &comp.steps {
+            println!("    - {} [{}]", step.id, step.kind);
+        }
+        println!();
+    }
+}
+
+fn run_status(cfg: &config::ArchanistConfig, state: &state::ArchanistState) {
+    if cfg.components.is_empty() {
+        println!(
+            "(no components configured; looked in {})",
+            cfg.components_dir.display()
+        );
+        return;
+    }
+    for name in cfg.component_names() {
+        println!("=== {name} ===");
+        match state.components.get(&name) {
+            Some(s) => {
+                println!(
+                    "  current:  {}",
+                    s.current_version.as_deref().unwrap_or("unknown")
+                );
+                println!(
+                    "  previous: {}",
+                    s.previous_version.as_deref().unwrap_or("none")
+                );
+                if let Some(t) = s.last_check {
+                    println!("  last check: {t}");
+                }
+            }
+            None => println!("  (no state yet)"),
+        }
+        println!();
+    }
 }

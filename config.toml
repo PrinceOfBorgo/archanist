@@ -5,3 +5,6 @@ log_level = "info"
 
 # Path to the state file (relative to this config file, or absolute).
 state_file = "state.toml"
+
+# Directory containing component recipe files (relative to this config file, or absolute).
+# components_dir = "components"
