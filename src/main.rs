@@ -4,17 +4,29 @@ mod state;
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use tracing::{debug, info_span};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{Builder, Rotation};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, fmt};
 
 const DEFAULT_CONFIG_TOML: &str = r#"schema = 1
 
-# Log level: trace | debug | info | warn | error
+# Console log level: trace | debug | info | warn | error
 log_level = "info"
+
+# Optional file logging (omit log_dir to disable).
+# Files are named <log_file_prefix>.<date>.log and written under log_dir.
+log_dir = "logs"
+log_file_prefix = "archanist"
+log_file_level = "debug"
+log_rotation = "daily"   # daily | hourly | never
 
 # Path to the state file (relative to this config file, or absolute).
 state_file = "state.toml"
 
 # Directory containing component recipe files (relative to this config file, or absolute).
-# components_dir = "components"
+components_dir = "components"
 "#;
 
 #[derive(Parser)]
@@ -29,7 +41,7 @@ struct Cli {
     #[arg(short, long, default_value = "config.toml", global = true)]
     config: PathBuf,
 
-    /// Increase log verbosity (-v = debug, -vv = trace). Overrides config log_level.
+    /// Increase console log verbosity (-v = debug, -vv = trace). Overrides config log_level.
     #[arg(short, long, global = true, action = ArgAction::Count)]
     verbose: u8,
 
@@ -52,47 +64,98 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if matches!(cli.command, Commands::Init) {
+        return run_init(&cli.config);
+    }
+
+    let (cfg, _log_guard) = load_and_setup(&cli)?;
+
+    let run_id = format!("run-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+    let run_span = info_span!("run", run_id = %run_id);
+    let _entered = run_span.enter();
+
+    debug!(
+        "archanist v{} starting from config {}",
+        env!("CARGO_PKG_VERSION"),
+        cli.config.display()
+    );
+    debug!("discovered {} component(s)", cfg.components.len());
+    for name in cfg.component_names() {
+        debug!(
+            "component '{}' has {} step(s)",
+            name,
+            cfg.components[&name].steps.len()
+        );
+    }
+
     match &cli.command {
-        Commands::Init => run_init(&cli.config),
+        Commands::Init => unreachable!(),
         Commands::Config => {
-            let cfg = load_and_setup(&cli)?;
             println!("{:#?}", cfg);
-            Ok(())
         }
-        Commands::List => {
-            let cfg = load_and_setup(&cli)?;
-            run_list(&cfg);
-            Ok(())
-        }
+        Commands::List => run_list(&cfg),
         Commands::Status => {
-            let cfg = load_and_setup(&cli)?;
             let state = state::ArchanistState::load(&cfg.state_path())?;
             run_status(&cfg, &state);
-            Ok(())
         }
     }
+    Ok(())
 }
 
-fn load_and_setup(cli: &Cli) -> Result<config::ArchanistConfig> {
+fn load_and_setup(cli: &Cli) -> Result<(config::ArchanistConfig, Option<WorkerGuard>)> {
     let cfg = config::ArchanistConfig::load(&cli.config)?;
-    setup_tracing(&cfg.log_level, cli.verbose)?;
-    Ok(cfg)
+    let guard = setup_tracing(&cfg, cli.verbose)?;
+    Ok((cfg, guard))
 }
 
-fn setup_tracing(config_level: &str, verbose: u8) -> Result<()> {
-    let level = match verbose {
-        0 => config_level,
+fn setup_tracing(cfg: &config::ArchanistConfig, verbose: u8) -> Result<Option<WorkerGuard>> {
+    let console_level = match verbose {
+        0 => cfg.log_level.as_str(),
         1 => "debug",
         _ => "trace",
     };
-    let default_directive = format!("{}={}", env!("CARGO_PKG_NAME").replace('-', "_"), level);
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive(default_directive.parse()?),
-        )
+    let pkg = env!("CARGO_PKG_NAME").replace('-', "_");
+
+    let console_filter =
+        EnvFilter::from_default_env().add_directive(format!("{}={}", pkg, console_level).parse()?);
+    let console_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(console_filter);
+
+    let (file_layer, guard) = if let Some(log_dir) = &cfg.log_dir {
+        std::fs::create_dir_all(log_dir)
+            .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
+        let rotation = match cfg.log_rotation {
+            config::LogRotation::Daily => Rotation::DAILY,
+            config::LogRotation::Hourly => Rotation::HOURLY,
+            config::LogRotation::Never => Rotation::NEVER,
+        };
+        let appender = Builder::new()
+            .rotation(rotation)
+            .filename_prefix(&cfg.log_file_prefix)
+            .filename_suffix("log")
+            .build(log_dir)
+            .with_context(|| format!("Failed to build file appender in {}", log_dir.display()))?;
+        let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+        let file_filter = EnvFilter::from_default_env()
+            .add_directive(format!("{}={}", pkg, cfg.log_file_level).parse()?);
+        let event_format = fmt::format().with_ansi(false).with_target(true);
+        let layer = fmt::layer()
+            .with_writer(non_blocking)
+            .with_ansi(false)
+            .event_format(event_format)
+            .with_filter(file_filter);
+        (Some(layer), Some(guard))
+    } else {
+        (None, None)
+    };
+
+    tracing_subscriber::registry()
+        .with(file_layer)
+        .with(console_layer)
         .init();
-    Ok(())
+
+    Ok(guard)
 }
 
 fn run_init(config_path: &Path) -> Result<()> {

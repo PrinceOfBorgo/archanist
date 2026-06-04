@@ -9,10 +9,23 @@ const SUPPORTED_COMPONENT_SCHEMAS: &[u32] = &[1];
 #[derive(Debug)]
 pub struct ArchanistConfig {
     pub log_level: String,
+    pub log_dir: Option<PathBuf>,
+    pub log_file_prefix: String,
+    pub log_file_level: String,
+    pub log_rotation: LogRotation,
     pub state_file: PathBuf,
     pub components_dir: PathBuf,
     pub base_dir: PathBuf,
     pub components: HashMap<String, ComponentConfig>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogRotation {
+    #[default]
+    Daily,
+    Hourly,
+    Never,
 }
 
 #[derive(Debug)]
@@ -36,6 +49,18 @@ struct MainConfigFile {
     #[serde(default = "default_log_level")]
     log_level: String,
 
+    #[serde(default)]
+    log_dir: Option<PathBuf>,
+
+    #[serde(default = "default_log_file_prefix")]
+    log_file_prefix: String,
+
+    #[serde(default = "default_log_file_level")]
+    log_file_level: String,
+
+    #[serde(default)]
+    log_rotation: LogRotation,
+
     #[serde(default = "default_state_file")]
     state_file: PathBuf,
 
@@ -54,6 +79,12 @@ struct ComponentConfigFile {
 
 fn default_log_level() -> String {
     "info".into()
+}
+fn default_log_file_prefix() -> String {
+    "archanist".into()
+}
+fn default_log_file_level() -> String {
+    "debug".into()
 }
 fn default_state_file() -> PathBuf {
     PathBuf::from("state.toml")
@@ -107,8 +138,16 @@ impl ArchanistConfig {
         };
         let components = Self::load_components(&components_dir)?;
 
+        let log_dir = main
+            .log_dir
+            .map(|d| if d.is_absolute() { d } else { base_dir.join(d) });
+
         Ok(ArchanistConfig {
             log_level: main.log_level,
+            log_dir,
+            log_file_prefix: main.log_file_prefix,
+            log_file_level: main.log_file_level,
+            log_rotation: main.log_rotation,
             state_file: main.state_file,
             components_dir,
             base_dir,
@@ -121,9 +160,8 @@ impl ArchanistConfig {
         if !dir.exists() {
             return Ok(map);
         }
-        let entries = std::fs::read_dir(dir).with_context(|| {
-            format!("Failed to read components directory: {}", dir.display())
-        })?;
+        let entries = std::fs::read_dir(dir)
+            .with_context(|| format!("Failed to read components directory: {}", dir.display()))?;
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
