@@ -39,6 +39,8 @@ pub struct StepConfig {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: String,
+    #[serde(flatten)]
+    pub extra: toml::Table,
 }
 
 #[derive(Deserialize)]

@@ -1,5 +1,7 @@
 mod config;
+mod pipeline;
 mod state;
+mod steps;
 
 use anyhow::{Context, Result};
 use clap::{ArgAction, Parser, Subcommand};
@@ -59,6 +61,16 @@ enum Commands {
     List,
     /// Print current state.
     Status,
+    /// Print the planned steps for a component without executing them.
+    DryRun {
+        /// Name of the component to plan.
+        component: String,
+    },
+    /// Execute all steps of a component in order.
+    Run {
+        /// Name of the component to run.
+        component: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -98,8 +110,29 @@ fn main() -> Result<()> {
             let state = state::ArchanistState::load(&cfg.state_path())?;
             run_status(&cfg, &state);
         }
+        Commands::DryRun { component } => {
+            let pipeline = build_component_pipeline(&cfg, component)?;
+            pipeline.dry_run();
+        }
+        Commands::Run { component } => {
+            let pipeline = build_component_pipeline(&cfg, component)?;
+            pipeline.run()?;
+        }
     }
     Ok(())
+}
+
+fn build_component_pipeline(
+    cfg: &config::ArchanistConfig,
+    component: &str,
+) -> Result<pipeline::Pipeline> {
+    let comp = cfg.components.get(component).with_context(|| {
+        format!(
+            "unknown component '{}' (run `archanist list` to see configured components)",
+            component
+        )
+    })?;
+    pipeline::Pipeline::build(component, comp)
 }
 
 fn load_and_setup(cli: &Cli) -> Result<(config::ArchanistConfig, Option<WorkerGuard>)> {
