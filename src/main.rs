@@ -76,10 +76,20 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Init doesn't need async runtime
     if matches!(cli.command, Commands::Init) {
         return run_init(&cli.config);
     }
 
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .context("failed to build tokio runtime")?
+        .block_on(run_async(cli))
+}
+
+async fn run_async(cli: Cli) -> Result<()> {
     let (cfg, _log_guard) = load_and_setup(&cli)?;
 
     let run_id = format!("run-{}", chrono::Local::now().format("%Y%m%d-%H%M%S"));
@@ -116,7 +126,7 @@ fn main() -> Result<()> {
         }
         Commands::Run { component } => {
             let pipeline = build_component_pipeline(&cfg, component)?;
-            pipeline.run()?;
+            pipeline.run().await?;
         }
     }
     Ok(())

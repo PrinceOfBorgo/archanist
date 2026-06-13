@@ -40,7 +40,7 @@ impl Pipeline {
         }
     }
 
-    pub fn run(&self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         let total = self.steps.len();
         info!(
             "running pipeline for component '{}' ({} step(s))",
@@ -49,6 +49,7 @@ impl Pipeline {
         for (i, step) in self.steps.iter().enumerate() {
             info!("step {}/{}: [{}] {}", i + 1, total, step.kind(), step.id());
             step.execute()
+                .await
                 .with_context(|| format!("step '{}' failed", step.id()))?;
         }
         info!(

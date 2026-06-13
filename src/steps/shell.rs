@@ -1,8 +1,8 @@
 use crate::config::StepConfig;
-use crate::steps::Step;
+use crate::steps::{ExecuteFuture, Step};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::process::Command;
+use tokio::process::Command;
 use tracing::info;
 
 pub struct Shell {
@@ -57,8 +57,8 @@ struct ShellRaw {
     shell: Option<ShellKind>,
 }
 
-impl Shell {
-    pub fn from_config(cfg: &StepConfig) -> Result<Self> {
+impl Step for Shell {
+    fn from_config(cfg: &StepConfig) -> Result<Self> {
         let raw: ShellRaw = toml::Value::Table(cfg.extra.clone())
             .try_into()
             .with_context(|| format!("step '{}': invalid shell config", cfg.id))?;
@@ -68,9 +68,7 @@ impl Shell {
             shell: raw.shell.unwrap_or_else(ShellKind::default_for_platform),
         })
     }
-}
 
-impl Step for Shell {
     fn id(&self) -> &str {
         &self.id
     }
@@ -83,17 +81,20 @@ impl Step for Shell {
         format!("run ({}): {}", self.shell.program(), self.command)
     }
 
-    fn execute(&self) -> Result<()> {
-        let program = self.shell.program();
-        info!("[{}] running via {}: {}", self.id, program, self.command);
-        let status = Command::new(program)
-            .args(self.shell.args(&self.command))
-            .status()
-            .with_context(|| format!("step '{}': failed to spawn {}", self.id, program))?;
+    fn execute(&self) -> ExecuteFuture<'_> {
+        Box::pin(async move {
+            let program = self.shell.program();
+            info!("[{}] running via {}: {}", self.id, program, self.command);
+            let status = Command::new(program)
+                .args(self.shell.args(&self.command))
+                .status()
+                .await
+                .with_context(|| format!("step '{}': failed to spawn {}", self.id, program))?;
 
-        if !status.success() {
-            bail!("step '{}': command exited with {}", self.id, status);
-        }
-        Ok(())
+            if !status.success() {
+                bail!("step '{}': command exited with {}", self.id, status);
+            }
+            Ok(())
+        })
     }
 }

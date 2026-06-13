@@ -1,18 +1,28 @@
+pub mod download;
 pub mod shell;
 
 use crate::config::StepConfig;
 use anyhow::{Result, bail};
+use std::future::Future;
+use std::pin::Pin;
 
-pub trait Step {
+pub type ExecuteFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+
+pub trait Step: Send + Sync {
+    fn from_config(cfg: &StepConfig) -> Result<Self>
+    where
+        Self: Sized;
+
     fn id(&self) -> &str;
     fn kind(&self) -> &str;
     fn describe(&self) -> String;
-    fn execute(&self) -> Result<()>;
+    fn execute(&self) -> ExecuteFuture<'_>;
 }
 
 pub fn build_step(cfg: &StepConfig) -> Result<Box<dyn Step>> {
     match cfg.kind.as_str() {
         "shell" => Ok(Box::new(shell::Shell::from_config(cfg)?)),
+        "download" => Ok(Box::new(download::Download::from_config(cfg)?)),
         other => bail!("step '{}': unsupported type '{}'", cfg.id, other),
     }
 }
