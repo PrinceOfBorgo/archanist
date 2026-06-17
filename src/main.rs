@@ -1,9 +1,11 @@
 mod config;
 mod pipeline;
+mod release;
 mod state;
 mod steps;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use clap::{ArgAction, Parser, Subcommand};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info_span};
@@ -71,6 +73,12 @@ enum Commands {
         /// Name of the component to run.
         component: String,
     },
+    /// Check upstream release feeds for available updates.
+    Check {
+        /// Only check this component. Omit to check all.
+        #[arg(short = 'n', long)]
+        component: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,6 +135,12 @@ async fn run_async(cli: Cli) -> Result<()> {
         Commands::Run { component } => {
             let pipeline = build_component_pipeline(&cfg, component)?;
             pipeline.run().await?;
+        }
+        Commands::Check { component } => {
+            let state_path = cfg.state_path();
+            let mut state = state::ArchanistState::load(&state_path)?;
+            run_check(&cfg, &mut state, component.as_deref()).await?;
+            state.save(&state_path)?;
         }
     }
     Ok(())
@@ -252,14 +266,18 @@ fn run_status(cfg: &config::ArchanistConfig, state: &state::ArchanistState) {
         println!("=== {name} ===");
         match state.components.get(&name) {
             Some(s) => {
-                println!(
-                    "  current:  {}",
-                    s.current_version.as_deref().unwrap_or("unknown")
-                );
+                let current = s.current_version.as_deref().unwrap_or("unknown");
+                println!("  current:  {}", current);
                 println!(
                     "  previous: {}",
                     s.previous_version.as_deref().unwrap_or("none")
                 );
+                if let Some(latest) = &s.latest_check_version {
+                    println!("  latest:   {}", latest);
+                    if s.current_version.as_deref() != Some(latest.as_str()) {
+                        println!("  UPDATE AVAILABLE: {} -> {}", current, latest);
+                    }
+                }
                 if let Some(t) = s.last_check {
                     println!("  last check: {t}");
                 }
@@ -268,4 +286,50 @@ fn run_status(cfg: &config::ArchanistConfig, state: &state::ArchanistState) {
         }
         println!();
     }
+}
+
+async fn run_check(
+    cfg: &config::ArchanistConfig,
+    state: &mut state::ArchanistState,
+    filter: Option<&str>,
+) -> Result<()> {
+    let names: Vec<String> = if let Some(name) = filter {
+        if !cfg.components.contains_key(name) {
+            bail!(
+                "unknown component '{}' (run `archanist list` to see configured components)",
+                name
+            );
+        }
+        vec![name.to_string()]
+    } else {
+        cfg.component_names()
+    };
+
+    for name in &names {
+        let comp = &cfg.components[name];
+        let Some(src) = &comp.release else {
+            println!("{}: no [release] source configured, skipping", name);
+            continue;
+        };
+        print!("{}: checking... ", name);
+        match src.fetch_latest().await {
+            Ok(latest) => {
+                let entry = state.components.entry(name.clone()).or_default();
+                let current = entry.current_version.as_deref().unwrap_or("(none)").to_string();
+                let update_available = entry.current_version.as_deref() != Some(latest.as_str());
+                entry.latest_check_version = Some(latest.clone());
+                entry.last_check = Some(Utc::now());
+                let marker = if update_available {
+                    " (update available)"
+                } else {
+                    ""
+                };
+                println!("current={}, latest={}{}", current, latest, marker);
+            }
+            Err(e) => {
+                println!("failed: {:#}", e);
+            }
+        }
+    }
+    Ok(())
 }

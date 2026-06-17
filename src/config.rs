@@ -1,3 +1,4 @@
+use crate::release::ReleaseSource;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -32,6 +33,7 @@ pub enum LogRotation {
 pub struct ComponentConfig {
     pub description: Option<String>,
     pub steps: Vec<StepConfig>,
+    pub release: Option<ReleaseSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +79,8 @@ struct ComponentConfigFile {
     description: Option<String>,
     #[serde(default)]
     steps: Vec<StepConfig>,
+    #[serde(default)]
+    release: Option<ReleaseSource>,
 }
 
 fn default_log_level() -> String {
@@ -209,6 +213,7 @@ impl ArchanistConfig {
                 ComponentConfig {
                     description: file.description,
                     steps: file.steps,
+                    release: file.release,
                 },
             );
         }
