@@ -1,4 +1,5 @@
 use crate::config::StepConfig;
+use crate::interp::{Env, interpolate};
 use crate::steps::{ExecuteFuture, Step};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -67,11 +68,13 @@ impl Step for HttpHealth {
         )
     }
 
-    fn execute(&self) -> ExecuteFuture<'_> {
+    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
         Box::pin(async move {
+            let url = interpolate(&self.url, env)
+                .with_context(|| format!("step '{}': failed to interpolate url", self.id))?;
             info!(
                 "[{}] polling {} for HTTP {}",
-                self.id, self.url, self.expected_status
+                self.id, url, self.expected_status
             );
             let client = reqwest::Client::builder()
                 .user_agent(concat!("archanist/", env!("CARGO_PKG_VERSION")))
@@ -81,7 +84,7 @@ impl Step for HttpHealth {
 
             let start = Instant::now();
             loop {
-                match client.get(&self.url).send().await {
+                match client.get(&url).send().await {
                     Ok(resp) => {
                         let status = resp.status().as_u16();
                         if status == self.expected_status {
@@ -89,7 +92,7 @@ impl Step for HttpHealth {
                                 "[{}] got HTTP {} from {} after {:.1}s",
                                 self.id,
                                 status,
-                                self.url,
+                                url,
                                 start.elapsed().as_secs_f32()
                             );
                             return Ok(());
@@ -108,7 +111,7 @@ impl Step for HttpHealth {
                         "step '{}': did not get HTTP {} from {} within {}s",
                         self.id,
                         self.expected_status,
-                        self.url,
+                        url,
                         self.timeout.as_secs()
                     );
                 }

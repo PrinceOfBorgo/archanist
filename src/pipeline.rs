@@ -1,4 +1,5 @@
 use crate::config::ComponentConfig;
+use crate::interp::Env;
 use crate::steps::{self, Step};
 use anyhow::{Context, Result};
 use tracing::{debug, info};
@@ -46,9 +47,10 @@ impl Pipeline {
             "running pipeline for component '{}' ({} step(s))",
             self.component_name, total
         );
+        let mut env = Env::new();
         for (i, step) in self.steps.iter().enumerate() {
             info!("step {}/{}: [{}] {}", i + 1, total, step.kind(), step.id());
-            step.execute()
+            step.execute(&mut env)
                 .await
                 .with_context(|| format!("step '{}' failed", step.id()))?;
         }

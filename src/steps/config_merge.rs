@@ -1,21 +1,22 @@
 use crate::config::StepConfig;
+use crate::interp::{Env, interpolate};
 use crate::steps::{ExecuteFuture, Step};
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::Path;
 use toml_edit::{DocumentMut, Table};
 use tracing::info;
 
 pub struct ConfigMerge {
     id: String,
-    target: PathBuf,
-    patch: PathBuf,
+    target: String,
+    patch: String,
 }
 
 #[derive(Deserialize)]
 struct ConfigMergeRaw {
-    target: PathBuf,
-    patch: PathBuf,
+    target: String,
+    patch: String,
 }
 
 impl Step for ConfigMerge {
@@ -39,67 +40,64 @@ impl Step for ConfigMerge {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "merge {} into {}",
-            self.patch.display(),
-            self.target.display()
-        )
+        format!("merge {} into {}", self.patch, self.target)
     }
 
-    fn execute(&self) -> ExecuteFuture<'_> {
+    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
         Box::pin(async move {
+            let target_str = interpolate(&self.target, env)
+                .with_context(|| format!("step '{}': failed to interpolate target", self.id))?;
+            let patch_str = interpolate(&self.patch, env)
+                .with_context(|| format!("step '{}': failed to interpolate patch", self.id))?;
+            let target = Path::new(&target_str);
+            let patch = Path::new(&patch_str);
+
             info!(
                 "[{}] merging {} into {}",
                 self.id,
-                self.patch.display(),
-                self.target.display()
+                patch.display(),
+                target.display()
             );
 
-            let target_content =
-                tokio::fs::read_to_string(&self.target)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "step '{}': failed to read target {}",
-                            self.id,
-                            self.target.display()
-                        )
-                    })?;
-            let patch_content =
-                tokio::fs::read_to_string(&self.patch)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "step '{}': failed to read patch {}",
-                            self.id,
-                            self.patch.display()
-                        )
-                    })?;
+            let target_content = tokio::fs::read_to_string(target).await.with_context(|| {
+                format!(
+                    "step '{}': failed to read target {}",
+                    self.id,
+                    target.display()
+                )
+            })?;
+            let patch_content = tokio::fs::read_to_string(patch).await.with_context(|| {
+                format!(
+                    "step '{}': failed to read patch {}",
+                    self.id,
+                    patch.display()
+                )
+            })?;
 
             let mut target_doc: DocumentMut = target_content.parse().with_context(|| {
                 format!(
                     "step '{}': failed to parse target {} as TOML",
                     self.id,
-                    self.target.display()
+                    target.display()
                 )
             })?;
             let patch_doc: DocumentMut = patch_content.parse().with_context(|| {
                 format!(
                     "step '{}': failed to parse patch {} as TOML",
                     self.id,
-                    self.patch.display()
+                    patch.display()
                 )
             })?;
 
             merge_tables(target_doc.as_table_mut(), patch_doc.as_table());
 
-            tokio::fs::write(&self.target, target_doc.to_string())
+            tokio::fs::write(target, target_doc.to_string())
                 .await
                 .with_context(|| {
                     format!(
                         "step '{}': failed to write merged {}",
                         self.id,
-                        self.target.display()
+                        target.display()
                     )
                 })?;
             Ok(())
@@ -123,5 +121,63 @@ fn merge_tables(dst: &mut Table, src: &Table) {
                 dst.insert(key, src_item.clone());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_tables;
+    use toml_edit::DocumentMut;
+
+    fn merged(dst: &str, src: &str) -> String {
+        let mut d: DocumentMut = dst.parse().unwrap();
+        let s: DocumentMut = src.parse().unwrap();
+        merge_tables(d.as_table_mut(), s.as_table());
+        d.to_string()
+    }
+
+    #[test]
+    fn scalar_is_replaced() {
+        let out = merged("a = 1\n", "a = 2\n");
+        assert!(out.contains("a = 2"), "out: {out}");
+        assert!(!out.contains("a = 1"), "out: {out}");
+    }
+
+    #[test]
+    fn missing_key_is_added() {
+        let out = merged("a = 1\n", "b = 2\n");
+        assert!(out.contains("a = 1"), "out: {out}");
+        assert!(out.contains("b = 2"), "out: {out}");
+    }
+
+    #[test]
+    fn nested_table_deep_merges() {
+        let out = merged(
+            "[db]\nhost = \"local\"\nport = 5432\n",
+            "[db]\nhost = \"prod\"\n",
+        );
+        assert!(out.contains("host = \"prod\""), "out: {out}");
+        assert!(out.contains("port = 5432"), "out: {out}");
+    }
+
+    #[test]
+    fn missing_nested_key_is_added() {
+        let out = merged("[db]\nhost = \"local\"\n", "[db]\npassword = \"s3cret\"\n");
+        assert!(out.contains("host = \"local\""), "out: {out}");
+        assert!(out.contains("password = \"s3cret\""), "out: {out}");
+    }
+
+    #[test]
+    fn empty_patch_leaves_target_unchanged() {
+        let out = merged("a = 1\nb = 2\n", "");
+        assert!(out.contains("a = 1"), "out: {out}");
+        assert!(out.contains("b = 2"), "out: {out}");
+    }
+
+    #[test]
+    fn target_comments_preserved() {
+        let out = merged("# keep me\na = 1\n", "a = 2\n");
+        assert!(out.contains("# keep me"), "out: {out}");
+        assert!(out.contains("a = 2"), "out: {out}");
     }
 }

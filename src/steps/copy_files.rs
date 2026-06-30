@@ -1,20 +1,21 @@
 use crate::config::StepConfig;
+use crate::interp::{Env, interpolate};
 use crate::steps::{ExecuteFuture, Step};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tracing::info;
 
 pub struct CopyFiles {
     id: String,
-    src: PathBuf,
-    dest: PathBuf,
+    src: String,
+    dest: String,
 }
 
 #[derive(Deserialize)]
 struct CopyFilesRaw {
-    src: PathBuf,
-    dest: PathBuf,
+    src: String,
+    dest: String,
 }
 
 impl Step for CopyFiles {
@@ -38,60 +39,63 @@ impl Step for CopyFiles {
     }
 
     fn describe(&self) -> String {
-        format!("copy {} -> {}", self.src.display(), self.dest.display())
+        format!("copy {} -> {}", self.src, self.dest)
     }
 
-    fn execute(&self) -> ExecuteFuture<'_> {
+    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
         Box::pin(async move {
+            let src_str = interpolate(&self.src, env)
+                .with_context(|| format!("step '{}': failed to interpolate src", self.id))?;
+            let dest_str = interpolate(&self.dest, env)
+                .with_context(|| format!("step '{}': failed to interpolate dest", self.id))?;
+            let src = Path::new(&src_str);
+            let dest = Path::new(&dest_str);
+
             info!(
                 "[{}] copying {} to {}",
                 self.id,
-                self.src.display(),
-                self.dest.display()
+                src.display(),
+                dest.display()
             );
 
-            let meta = tokio::fs::metadata(&self.src).await.with_context(|| {
+            let meta = tokio::fs::metadata(src).await.with_context(|| {
                 format!(
                     "step '{}': source not accessible: {}",
                     self.id,
-                    self.src.display()
+                    src.display()
                 )
             })?;
 
             if meta.is_dir() {
-                copy_dir_recursive(&self.src, &self.dest)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "step '{}': failed to copy directory {} to {}",
-                            self.id,
-                            self.src.display(),
-                            self.dest.display()
-                        )
-                    })?;
+                copy_dir_recursive(src, dest).await.with_context(|| {
+                    format!(
+                        "step '{}': failed to copy directory {} to {}",
+                        self.id,
+                        src.display(),
+                        dest.display()
+                    )
+                })?;
             } else if meta.is_file() {
-                if let Some(parent) = self.dest.parent()
+                if let Some(parent) = dest.parent()
                     && !parent.as_os_str().is_empty()
                 {
                     tokio::fs::create_dir_all(parent).await.with_context(|| {
                         format!("step '{}': failed to create {}", self.id, parent.display())
                     })?;
                 }
-                tokio::fs::copy(&self.src, &self.dest)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "step '{}': failed to copy {} to {}",
-                            self.id,
-                            self.src.display(),
-                            self.dest.display()
-                        )
-                    })?;
+                tokio::fs::copy(src, dest).await.with_context(|| {
+                    format!(
+                        "step '{}': failed to copy {} to {}",
+                        self.id,
+                        src.display(),
+                        dest.display()
+                    )
+                })?;
             } else {
                 bail!(
                     "step '{}': source {} is neither a file nor a directory",
                     self.id,
-                    self.src.display()
+                    src.display()
                 );
             }
             Ok(())

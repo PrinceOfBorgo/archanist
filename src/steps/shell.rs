@@ -1,4 +1,5 @@
 use crate::config::StepConfig;
+use crate::interp::{Env, interpolate};
 use crate::steps::{ExecuteFuture, Step};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -81,12 +82,14 @@ impl Step for Shell {
         format!("run ({}): {}", self.shell.program(), self.command)
     }
 
-    fn execute(&self) -> ExecuteFuture<'_> {
+    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
         Box::pin(async move {
+            let command = interpolate(&self.command, env)
+                .with_context(|| format!("step '{}': failed to interpolate command", self.id))?;
             let program = self.shell.program();
-            info!("[{}] running via {}: {}", self.id, program, self.command);
+            info!("[{}] running via {}: {}", self.id, program, command);
             let status = Command::new(program)
-                .args(self.shell.args(&self.command))
+                .args(self.shell.args(&command))
                 .status()
                 .await
                 .with_context(|| format!("step '{}': failed to spawn {}", self.id, program))?;
@@ -96,5 +99,54 @@ impl Step for Shell {
             }
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn programs_are_distinct() {
+        assert_eq!(ShellKind::Cmd.program(), "cmd");
+        assert_eq!(ShellKind::Sh.program(), "sh");
+        assert_eq!(ShellKind::Pwsh.program(), "pwsh");
+        assert_eq!(ShellKind::WinPwsh.program(), "powershell");
+    }
+
+    #[test]
+    fn cmd_uses_slash_c() {
+        assert_eq!(ShellKind::Cmd.args("echo hi"), vec!["/C", "echo hi"]);
+    }
+
+    #[test]
+    fn sh_uses_dash_c() {
+        assert_eq!(ShellKind::Sh.args("echo hi"), vec!["-c", "echo hi"]);
+    }
+
+    #[test]
+    fn pwsh_uses_command_flag() {
+        assert_eq!(
+            ShellKind::Pwsh.args("Write-Host hi"),
+            vec!["-NoProfile", "-NonInteractive", "-Command", "Write-Host hi"]
+        );
+    }
+
+    #[test]
+    fn winpwsh_shares_pwsh_flags() {
+        assert_eq!(
+            ShellKind::WinPwsh.args("Write-Host hi"),
+            vec!["-NoProfile", "-NonInteractive", "-Command", "Write-Host hi"]
+        );
+    }
+
+    #[test]
+    fn platform_default_is_cmd_on_windows_sh_elsewhere() {
+        let d = ShellKind::default_for_platform();
+        if cfg!(target_os = "windows") {
+            assert!(matches!(d, ShellKind::Cmd));
+        } else {
+            assert!(matches!(d, ShellKind::Sh));
+        }
     }
 }

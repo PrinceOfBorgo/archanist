@@ -2,9 +2,11 @@ pub mod config_merge;
 pub mod copy_files;
 pub mod download;
 pub mod http_health;
+pub mod parse_text;
 pub mod shell;
 
 use crate::config::StepConfig;
+use crate::interp::Env;
 use anyhow::{Result, bail};
 use std::future::Future;
 use std::pin::Pin;
@@ -19,7 +21,7 @@ pub trait Step: Send + Sync {
     fn id(&self) -> &str;
     fn kind(&self) -> &str;
     fn describe(&self) -> String;
-    fn execute(&self) -> ExecuteFuture<'_>;
+    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a>;
 }
 
 pub fn build_step(cfg: &StepConfig) -> Result<Box<dyn Step>> {
@@ -29,6 +31,7 @@ pub fn build_step(cfg: &StepConfig) -> Result<Box<dyn Step>> {
         "http_health" => Ok(Box::new(http_health::HttpHealth::from_config(cfg)?)),
         "copy_files" => Ok(Box::new(copy_files::CopyFiles::from_config(cfg)?)),
         "config_merge" => Ok(Box::new(config_merge::ConfigMerge::from_config(cfg)?)),
+        "parse_text" => Ok(Box::new(parse_text::ParseText::from_config(cfg)?)),
         other => bail!("step '{}': unsupported type '{}'", cfg.id, other),
     }
 }

@@ -1,21 +1,22 @@
 use crate::config::StepConfig;
+use crate::interp::{Env, interpolate};
 use crate::steps::{ExecuteFuture, Step};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 use tracing::info;
 
 pub struct Download {
     id: String,
     url: String,
-    dest: PathBuf,
+    dest: String,
 }
 
 #[derive(Deserialize)]
 struct DownloadRaw {
     url: String,
-    dest: PathBuf,
+    dest: String,
 }
 
 impl Step for Download {
@@ -39,19 +40,20 @@ impl Step for Download {
     }
 
     fn describe(&self) -> String {
-        format!("download {} -> {}", self.url, self.dest.display())
+        format!("download {} -> {}", self.url, self.dest)
     }
 
-    fn execute(&self) -> ExecuteFuture<'_> {
+    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
         Box::pin(async move {
-            info!(
-                "[{}] downloading {} to {}",
-                self.id,
-                self.url,
-                self.dest.display()
-            );
+            let url = interpolate(&self.url, env)
+                .with_context(|| format!("step '{}': failed to interpolate url", self.id))?;
+            let dest_str = interpolate(&self.dest, env)
+                .with_context(|| format!("step '{}': failed to interpolate dest", self.id))?;
+            let dest = Path::new(&dest_str);
 
-            if let Some(parent) = self.dest.parent()
+            info!("[{}] downloading {} to {}", self.id, url, dest.display());
+
+            if let Some(parent) = dest.parent()
                 && !parent.as_os_str().is_empty()
             {
                 tokio::fs::create_dir_all(parent).await.with_context(|| {
@@ -65,35 +67,30 @@ impl Step for Download {
                 .with_context(|| format!("step '{}': failed to build HTTP client", self.id))?;
 
             let resp = client
-                .get(&self.url)
+                .get(&url)
                 .send()
                 .await
-                .with_context(|| format!("step '{}': failed to GET {}", self.id, self.url))?;
+                .with_context(|| format!("step '{}': failed to GET {}", self.id, url))?;
 
             let status = resp.status();
             if !status.is_success() {
-                bail!("step '{}': HTTP {} for {}", self.id, status, self.url);
+                bail!("step '{}': HTTP {} for {}", self.id, status, url);
             }
 
-            let bytes = resp.bytes().await.with_context(|| {
-                format!("step '{}': failed to read body of {}", self.id, self.url)
-            })?;
-
-            tokio::fs::write(&self.dest, &bytes)
+            let bytes = resp
+                .bytes()
                 .await
-                .with_context(|| {
-                    format!(
-                        "step '{}': failed to write {}",
-                        self.id,
-                        self.dest.display()
-                    )
-                })?;
+                .with_context(|| format!("step '{}': failed to read body of {}", self.id, url))?;
+
+            tokio::fs::write(dest, &bytes).await.with_context(|| {
+                format!("step '{}': failed to write {}", self.id, dest.display())
+            })?;
 
             info!(
                 "[{}] wrote {} bytes to {}",
                 self.id,
                 bytes.len(),
-                self.dest.display()
+                dest.display()
             );
             Ok(())
         })
