@@ -1,6 +1,6 @@
 use crate::config::StepConfig;
-use crate::interp::{Env, interpolate};
-use crate::steps::{ExecuteFuture, Step};
+use crate::interp::interpolate;
+use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tokio::process::Command;
@@ -82,9 +82,9 @@ impl Step for Shell {
         format!("run ({}): {}", self.shell.program(), self.command)
     }
 
-    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let command = interpolate(&self.command, env)
+            let command = interpolate(&self.command, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate command", self.id))?;
             let program = self.shell.program();
             info!("[{}] running via {}: {}", self.id, program, command);
@@ -97,7 +97,7 @@ impl Step for Shell {
             if !status.success() {
                 bail!("step '{}': command exited with {}", self.id, status);
             }
-            Ok(())
+            Ok(StepOutcome::default())
         })
     }
 }

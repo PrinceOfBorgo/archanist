@@ -1,6 +1,6 @@
 use crate::config::StepConfig;
-use crate::interp::{Env, interpolate};
-use crate::steps::{ExecuteFuture, Step};
+use crate::interp::interpolate;
+use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::Path;
@@ -42,11 +42,11 @@ impl Step for CopyFiles {
         format!("copy {} -> {}", self.src, self.dest)
     }
 
-    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let src_str = interpolate(&self.src, env)
+            let src_str = interpolate(&self.src, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate src", self.id))?;
-            let dest_str = interpolate(&self.dest, env)
+            let dest_str = interpolate(&self.dest, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate dest", self.id))?;
             let src = Path::new(&src_str);
             let dest = Path::new(&dest_str);
@@ -98,7 +98,7 @@ impl Step for CopyFiles {
                     src.display()
                 );
             }
-            Ok(())
+            Ok(StepOutcome::default())
         })
     }
 }

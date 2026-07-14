@@ -1,6 +1,6 @@
 use crate::config::StepConfig;
-use crate::interp::{Env, interpolate};
-use crate::steps::{ExecuteFuture, Step};
+use crate::interp::interpolate;
+use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -68,9 +68,9 @@ impl Step for HttpHealth {
         )
     }
 
-    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let url = interpolate(&self.url, env)
+            let url = interpolate(&self.url, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate url", self.id))?;
             info!(
                 "[{}] polling {} for HTTP {}",
@@ -95,7 +95,7 @@ impl Step for HttpHealth {
                                 url,
                                 start.elapsed().as_secs_f32()
                             );
-                            return Ok(());
+                            return Ok(StepOutcome::default());
                         }
                         debug!(
                             "[{}] got HTTP {}, expected {}, retrying",

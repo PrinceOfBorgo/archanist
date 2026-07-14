@@ -1,6 +1,6 @@
 use crate::config::StepConfig;
-use crate::interp::{Env, interpolate};
-use crate::steps::{ExecuteFuture, Step};
+use crate::interp::interpolate;
+use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
@@ -43,11 +43,11 @@ impl Step for ConfigMerge {
         format!("merge {} into {}", self.patch, self.target)
     }
 
-    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let target_str = interpolate(&self.target, env)
+            let target_str = interpolate(&self.target, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate target", self.id))?;
-            let patch_str = interpolate(&self.patch, env)
+            let patch_str = interpolate(&self.patch, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate patch", self.id))?;
             let target = Path::new(&target_str);
             let patch = Path::new(&patch_str);
@@ -100,7 +100,7 @@ impl Step for ConfigMerge {
                         target.display()
                     )
                 })?;
-            Ok(())
+            Ok(StepOutcome::default())
         })
     }
 }

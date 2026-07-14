@@ -1,6 +1,6 @@
 use crate::config::StepConfig;
-use crate::interp::{Env, interpolate};
-use crate::steps::{ExecuteFuture, Step};
+use crate::interp::interpolate;
+use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -76,11 +76,11 @@ impl Step for DbMigrate {
         format!("run [{}] against {}", self.command.join(" "), src)
     }
 
-    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let files: Vec<PathBuf> = match &self.source {
                 Source::Glob(pattern) => {
-                    let pattern = interpolate(pattern, env).with_context(|| {
+                    let pattern = interpolate(pattern, &ctx.vars).with_context(|| {
                         format!("step '{}': failed to interpolate glob", self.id)
                     })?;
                     info!("[{}] expanding glob: {}", self.id, pattern);
@@ -97,7 +97,7 @@ impl Step for DbMigrate {
                 Source::Files(list) => {
                     let mut resolved: Vec<PathBuf> = Vec::with_capacity(list.len());
                     for raw in list {
-                        let rendered = interpolate(raw, env).with_context(|| {
+                        let rendered = interpolate(raw, &ctx.vars).with_context(|| {
                             format!("step '{}': failed to interpolate file '{}'", self.id, raw)
                         })?;
                         resolved.push(PathBuf::from(rendered));
@@ -116,7 +116,7 @@ impl Step for DbMigrate {
 
             let cwd =
                 match &self.cwd {
-                    Some(c) => Some(interpolate(c, env).with_context(|| {
+                    Some(c) => Some(interpolate(c, &ctx.vars).with_context(|| {
                         format!("step '{}': failed to interpolate cwd", self.id)
                     })?),
                     None => None,
@@ -145,7 +145,7 @@ impl Step for DbMigrate {
                 }
             }
 
-            Ok(())
+            Ok(StepOutcome::default())
         })
     }
 }

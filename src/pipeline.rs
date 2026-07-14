@@ -1,7 +1,8 @@
 use crate::config::ComponentConfig;
 use crate::interp::Env;
-use crate::steps::{self, Step};
+use crate::steps::{self, Step, StepCtx};
 use anyhow::{Context, Result};
+use std::sync::Arc;
 use tracing::{debug, info};
 
 pub struct Pipeline {
@@ -50,9 +51,24 @@ impl Pipeline {
         let mut env = Env::new();
         for (i, step) in self.steps.iter().enumerate() {
             info!("step {}/{}: [{}] {}", i + 1, total, step.kind(), step.id());
-            step.execute(&mut env)
+            let ctx = StepCtx {
+                vars: Arc::new(env.clone()),
+            };
+            let outcome = step
+                .apply(&ctx)
                 .await
                 .with_context(|| format!("step '{}' failed", step.id()))?;
+            for (k, v) in outcome.exported_vars {
+                env.insert(k, v);
+            }
+            if outcome.exit_after {
+                info!(
+                    "step '{}' requested exit_after; leaving pipeline for '{}'",
+                    step.id(),
+                    self.component_name
+                );
+                return Ok(());
+            }
         }
         info!(
             "pipeline for '{}' completed successfully",

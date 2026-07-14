@@ -1,6 +1,6 @@
 use crate::config::StepConfig;
-use crate::interp::{Env, interpolate};
-use crate::steps::{ExecuteFuture, Step};
+use crate::interp::interpolate;
+use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::Path;
@@ -43,11 +43,11 @@ impl Step for Download {
         format!("download {} -> {}", self.url, self.dest)
     }
 
-    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let url = interpolate(&self.url, env)
+            let url = interpolate(&self.url, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate url", self.id))?;
-            let dest_str = interpolate(&self.dest, env)
+            let dest_str = interpolate(&self.dest, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate dest", self.id))?;
             let dest = Path::new(&dest_str);
 
@@ -92,7 +92,7 @@ impl Step for Download {
                 bytes.len(),
                 dest.display()
             );
-            Ok(())
+            Ok(StepOutcome::default())
         })
     }
 }

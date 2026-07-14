@@ -1,6 +1,6 @@
 use crate::config::StepConfig;
 use crate::interp::{Env, interpolate};
-use crate::steps::{ExecuteFuture, Step};
+use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use regex::Regex;
 use serde::Deserialize;
@@ -44,9 +44,9 @@ impl Step for ParseText {
         format!("scan {} with /{}/", self.source, self.regex.as_str())
     }
 
-    fn execute<'a>(&'a self, env: &'a mut Env) -> ExecuteFuture<'a> {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let source = interpolate(&self.source, env)
+            let source = interpolate(&self.source, &ctx.vars)
                 .with_context(|| format!("step '{}': failed to interpolate source", self.id))?;
             info!(
                 "[{}] scanning {} with /{}/",
@@ -62,23 +62,24 @@ impl Step for ParseText {
                 anyhow::anyhow!("step '{}': regex did not match in {}", self.id, source)
             })?;
 
-            let mut exported = Vec::new();
+            let mut exported_vars = Env::new();
             for name in self.regex.capture_names().flatten() {
                 if let Some(m) = caps.name(name) {
                     let value = m.as_str().to_string();
                     debug!("[{}] captured {} = {:?}", self.id, name, value);
-                    env.insert(name.to_string(), value);
-                    exported.push(name);
+                    exported_vars.insert(name.to_string(), value);
                 }
             }
             info!(
-                "[{}] exported {} variable(s) from {}: {:?}",
+                "[{}] exported {} variable(s) from {}",
                 self.id,
-                exported.len(),
-                source,
-                exported
+                exported_vars.len(),
+                source
             );
-            Ok(())
+            Ok(StepOutcome {
+                exported_vars,
+                ..Default::default()
+            })
         })
     }
 }
