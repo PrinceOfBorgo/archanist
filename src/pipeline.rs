@@ -1,6 +1,6 @@
 use crate::config::ComponentConfig;
 use crate::interp::Env;
-use crate::steps::{self, Step, StepCtx};
+use crate::steps::{self, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -25,6 +25,10 @@ impl Pipeline {
         })
     }
 
+    pub fn steps(&self) -> &[Box<dyn Step>] {
+        &self.steps
+    }
+
     pub fn dry_run(&self) {
         println!(
             "=== dry-run: {} ({} step(s)) ===",
@@ -42,7 +46,13 @@ impl Pipeline {
         }
     }
 
-    pub async fn run(&self) -> Result<()> {
+    /// Run the pipeline. `on_step_complete` is called with the step and its
+    /// outcome after each successful step, allowing callers to persist state
+    /// (per-step `applied_steps` for rollback) as the pipeline progresses.
+    pub async fn run<F>(&self, mut on_step_complete: F) -> Result<()>
+    where
+        F: FnMut(&dyn Step, &StepOutcome) -> Result<()>,
+    {
         let total = self.steps.len();
         info!(
             "running pipeline for component '{}' ({} step(s))",
@@ -58,8 +68,11 @@ impl Pipeline {
                 .apply(&ctx)
                 .await
                 .with_context(|| format!("step '{}' failed", step.id()))?;
-            for (k, v) in outcome.exported_vars {
-                env.insert(k, v);
+            on_step_complete(&**step, &outcome).with_context(|| {
+                format!("failed to persist state after step '{}'", step.id())
+            })?;
+            for (k, v) in &outcome.exported_vars {
+                env.insert(k.clone(), v.clone());
             }
             if outcome.exit_after {
                 info!(

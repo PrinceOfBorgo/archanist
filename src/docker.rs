@@ -1,11 +1,14 @@
 use anyhow::{Context, Result};
 use bollard::Docker;
-use bollard::models::{ContainerCreateBody, HostConfig, RestartPolicy, RestartPolicyNameEnum};
+use bollard::models::{
+    ContainerCreateBody, ContainerSummary, HostConfig, RestartPolicy, RestartPolicyNameEnum,
+};
 use bollard::query_parameters::{
-    CreateContainerOptions, CreateImageOptions, RemoveContainerOptions, StartContainerOptions,
-    StopContainerOptions,
+    CreateContainerOptions, CreateImageOptions, ListContainersOptions, RemoveContainerOptions,
+    StartContainerOptions, StopContainerOptions,
 };
 use futures_util::StreamExt;
+use std::collections::HashMap;
 use tracing::{debug, info};
 
 #[derive(Clone)]
@@ -37,6 +40,28 @@ impl DockerClient {
         }
         info!("pulled: {image}");
         Ok(())
+    }
+
+    pub async fn find_container(&self, name: &str) -> Result<Option<ContainerSummary>> {
+        let filters: HashMap<String, Vec<String>> = [("name".into(), vec![name.into()])].into();
+        let options = ListContainersOptions {
+            all: true,
+            filters: Some(filters),
+            ..Default::default()
+        };
+        let containers = self
+            .client
+            .list_containers(Some(options))
+            .await
+            .context("failed to list containers")?;
+        let exact = format!("/{name}");
+        Ok(containers
+            .into_iter()
+            .find(|c| c.names.as_ref().is_some_and(|n| n.contains(&exact))))
+    }
+
+    pub async fn container_image(&self, name: &str) -> Result<Option<String>> {
+        Ok(self.find_container(name).await?.and_then(|c| c.image))
     }
 
     pub async fn stop_container(&self, name: &str) -> Result<()> {

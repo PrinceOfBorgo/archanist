@@ -22,7 +22,7 @@ pub struct StepCtx {
 }
 
 /// Result of a step's `apply` call.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct StepOutcome {
     /// If true, the pipeline should stop after this step and return Ok.
     /// Used by `docker_swap` self-update so the process exits cleanly and
@@ -30,6 +30,19 @@ pub struct StepOutcome {
     pub exit_after: bool,
     /// Variables to publish for subsequent steps in the same pipeline.
     pub exported_vars: Env,
+    /// Opaque payload persisted per-step in state. Consumed by `rollback`
+    /// to know what to undo.
+    pub payload: toml::Value,
+}
+
+impl Default for StepOutcome {
+    fn default() -> Self {
+        Self {
+            exit_after: false,
+            exported_vars: Env::new(),
+            payload: toml::Value::Table(toml::Table::new()),
+        }
+    }
 }
 
 pub trait Step: Send + Sync {
@@ -41,6 +54,17 @@ pub trait Step: Send + Sync {
     fn kind(&self) -> &str;
     fn describe(&self) -> String;
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>>;
+
+    /// Undo a previously-applied step. Receives the payload recorded by
+    /// `apply`. Default implementation is a no-op for steps that don't
+    /// need rollback semantics.
+    fn rollback<'a>(
+        &'a self,
+        _ctx: &'a StepCtx,
+        _payload: &'a toml::Value,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { Ok(()) })
+    }
 }
 
 pub fn build_step(cfg: &StepConfig) -> Result<Box<dyn Step>> {

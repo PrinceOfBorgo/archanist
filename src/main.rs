@@ -81,6 +81,11 @@ enum Commands {
         #[arg(short = 'n', long)]
         component: Option<String>,
     },
+    /// Roll a component back by invoking each applied step's rollback in reverse order.
+    Rollback {
+        /// Name of the component to roll back.
+        component: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -136,12 +141,36 @@ async fn run_async(cli: Cli) -> Result<()> {
         }
         Commands::Run { component } => {
             let pipeline = build_component_pipeline(&cfg, component)?;
-            pipeline.run().await?;
+            let state_path = cfg.state_path();
+            let mut state = state::ArchanistState::load(&state_path)?;
+            let component_name = component.clone();
+            pipeline
+                .run(|step, outcome| {
+                    let applied = state::AppliedStep {
+                        kind: step.kind().to_string(),
+                        applied_at: chrono::Utc::now(),
+                        payload: outcome.payload.clone(),
+                    };
+                    state
+                        .components
+                        .entry(component_name.clone())
+                        .or_default()
+                        .applied_steps
+                        .insert(step.id().to_string(), applied);
+                    state.save(&state_path)
+                })
+                .await?;
         }
         Commands::Check { component } => {
             let state_path = cfg.state_path();
             let mut state = state::ArchanistState::load(&state_path)?;
             run_check(&cfg, &mut state, component.as_deref()).await?;
+            state.save(&state_path)?;
+        }
+        Commands::Rollback { component } => {
+            let state_path = cfg.state_path();
+            let mut state = state::ArchanistState::load(&state_path)?;
+            run_rollback(&cfg, &mut state, component).await?;
             state.save(&state_path)?;
         }
     }
@@ -317,7 +346,11 @@ async fn run_check(
         match src.fetch_latest().await {
             Ok(latest) => {
                 let entry = state.components.entry(name.clone()).or_default();
-                let current = entry.current_version.as_deref().unwrap_or("(none)").to_string();
+                let current = entry
+                    .current_version
+                    .as_deref()
+                    .unwrap_or("(none)")
+                    .to_string();
                 let update_available = entry.current_version.as_deref() != Some(latest.as_str());
                 entry.latest_check_version = Some(latest.clone());
                 entry.last_check = Some(Utc::now());
@@ -331,6 +364,53 @@ async fn run_check(
             Err(e) => {
                 println!("failed: {:#}", e);
             }
+        }
+    }
+    Ok(())
+}
+
+async fn run_rollback(
+    cfg: &config::ArchanistConfig,
+    state: &mut state::ArchanistState,
+    component: &str,
+) -> Result<()> {
+    let comp = cfg.components.get(component).with_context(|| {
+        format!(
+            "unknown component '{}' (run `archanist list` to see configured components)",
+            component
+        )
+    })?;
+
+    let Some(entry) = state.components.get_mut(component) else {
+        println!("{}: no state recorded, nothing to roll back", component);
+        return Ok(());
+    };
+
+    if entry.applied_steps.is_empty() {
+        println!(
+            "{}: no applied steps recorded, nothing to roll back",
+            component
+        );
+        return Ok(());
+    }
+
+    let pipeline = pipeline::Pipeline::build(component, comp)?;
+
+    // Roll back in reverse definition order so later steps unwind before earlier ones.
+    let ctx = steps::StepCtx {
+        vars: std::sync::Arc::new(interp::Env::new()),
+    };
+    for step in pipeline.steps().iter().rev() {
+        if let Some(applied) = entry.applied_steps.get(step.id()).cloned() {
+            println!(
+                "rolling back step '{}' (applied at {})",
+                step.id(),
+                applied.applied_at
+            );
+            step.rollback(&ctx, &applied.payload)
+                .await
+                .with_context(|| format!("rollback of step '{}' failed", step.id()))?;
+            entry.applied_steps.remove(step.id());
         }
     }
     Ok(())
