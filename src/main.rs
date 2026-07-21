@@ -86,6 +86,14 @@ enum Commands {
         /// Name of the component to roll back.
         component: String,
     },
+    /// Check for updates and apply them if a newer version is available.
+    Update {
+        /// Only update this component. Omit to update all.
+        #[arg(short = 'n', long)]
+        component: Option<String>,
+    },
+    /// Clear a version from the blocklist so it can be installed again.
+    Unblock { component: String, version: String },
 }
 
 fn main() -> Result<()> {
@@ -171,6 +179,19 @@ async fn run_async(cli: Cli) -> Result<()> {
             let state_path = cfg.state_path();
             let mut state = state::ArchanistState::load(&state_path)?;
             run_rollback(&cfg, &mut state, component).await?;
+            state.save(&state_path)?;
+        }
+        Commands::Update { component } => {
+            let state_path = cfg.state_path();
+            let mut state = state::ArchanistState::load(&state_path)?;
+            let result = run_update(&cfg, &mut state, component.as_deref(), &state_path).await;
+            state.save(&state_path)?;
+            result?;
+        }
+        Commands::Unblock { component, version } => {
+            let state_path = cfg.state_path();
+            let mut state = state::ArchanistState::load(&state_path)?;
+            run_unblock(&mut state, component, version)?;
             state.save(&state_path)?;
         }
     }
@@ -312,6 +333,9 @@ fn run_status(cfg: &config::ArchanistConfig, state: &state::ArchanistState) {
                 if let Some(t) = s.last_check {
                     println!("  last check: {t}");
                 }
+                if !s.blocklist.is_empty() {
+                    println!("  blocked:  {}", s.blocklist.join(", "));
+                }
             }
             None => println!("  (no state yet)"),
         }
@@ -412,6 +436,129 @@ async fn run_rollback(
                 .with_context(|| format!("rollback of step '{}' failed", step.id()))?;
             entry.applied_steps.remove(step.id());
         }
+    }
+    Ok(())
+}
+
+async fn run_update(
+    cfg: &config::ArchanistConfig,
+    state: &mut state::ArchanistState,
+    filter: Option<&str>,
+    state_path: &Path,
+) -> Result<()> {
+    let names: Vec<String> = if let Some(name) = filter {
+        if !cfg.components.contains_key(name) {
+            bail!(
+                "unknown component '{}' (run `archanist list` to see configured components)",
+                name
+            );
+        }
+        vec![name.to_string()]
+    } else {
+        cfg.component_names()
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+
+    for name in &names {
+        let comp = &cfg.components[name];
+        let Some(src) = &comp.release else {
+            println!("{}: no [release] source configured, skipping", name);
+            continue;
+        };
+
+        print!("{}: checking... ", name);
+        let latest = match src.fetch_latest().await {
+            Ok(v) => v,
+            Err(e) => {
+                println!("failed: {:#}", e);
+                continue;
+            }
+        };
+
+        let entry = state.components.entry(name.clone()).or_default();
+        entry.latest_check_version = Some(latest.clone());
+        entry.last_check = Some(Utc::now());
+
+        if entry.current_version.as_deref() == Some(latest.as_str()) {
+            println!("up to date at {}", latest);
+            continue;
+        }
+        if entry.blocklist.iter().any(|v| v == &latest) {
+            println!(
+                "version {} is blocked (unblock with `archanist unblock {} {}`)",
+                latest, name, latest
+            );
+            continue;
+        }
+
+        let current = entry
+            .current_version
+            .as_deref()
+            .unwrap_or("(none)")
+            .to_string();
+        println!("updating {} -> {}", current, latest);
+
+        let pipeline = pipeline::Pipeline::build(name, comp)?;
+        let component_name = name.clone();
+        let result = pipeline
+            .run(|step, outcome| {
+                let applied = state::AppliedStep {
+                    kind: step.kind().to_string(),
+                    applied_at: Utc::now(),
+                    payload: outcome.payload.clone(),
+                };
+                state
+                    .components
+                    .entry(component_name.clone())
+                    .or_default()
+                    .applied_steps
+                    .insert(step.id().to_string(), applied);
+                state.save(state_path)
+            })
+            .await;
+
+        match result {
+            Ok(()) => {
+                let entry = state.components.entry(name.clone()).or_default();
+                entry.previous_version = entry.current_version.take();
+                entry.current_version = Some(latest.clone());
+                println!("{}: updated to {}", name, latest);
+            }
+            Err(e) => {
+                println!("{}: update failed: {:#}", name, e);
+                let entry = state.components.entry(name.clone()).or_default();
+                if !entry.blocklist.iter().any(|v| v == &latest) {
+                    entry.blocklist.push(latest.clone());
+                }
+                failures.push(name.clone());
+            }
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!("update failed for: {}", failures.join(", "))
+    }
+}
+
+fn run_unblock(state: &mut state::ArchanistState, component: &str, version: &str) -> Result<()> {
+    let entry = state.components.get_mut(component).with_context(|| {
+        format!(
+            "unknown component '{}' (run `archanist list` to see configured components)",
+            component
+        )
+    })?;
+    let before = entry.blocklist.len();
+    entry.blocklist.retain(|v| v != version);
+    if entry.blocklist.len() == before {
+        println!(
+            "{}: version {} was not in the blocklist",
+            component, version
+        );
+    } else {
+        println!("{}: unblocked version {}", component, version);
     }
     Ok(())
 }

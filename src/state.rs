@@ -19,6 +19,8 @@ pub struct ComponentState {
     pub last_check: Option<DateTime<Utc>>,
     #[serde(default)]
     pub applied_steps: HashMap<String, AppliedStep>,
+    #[serde(default)]
+    pub blocklist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,5 +118,31 @@ mod tests {
             Some("1.0.0")
         );
         assert!(back.components["web"].applied_steps.contains_key("swap"));
+    }
+
+    #[test]
+    fn state_with_blocklist_roundtrips() {
+        let mut state = ArchanistState::default();
+        let comp = ComponentState {
+            current_version: Some("1.0.0".into()),
+            blocklist: vec!["1.0.5".into(), "1.0.6-alpha".into()],
+            ..Default::default()
+        };
+        state.components.insert("web".into(), comp);
+        let s = toml::to_string(&state).unwrap();
+        let back: ArchanistState = toml::from_str(&s).unwrap();
+        assert_eq!(back.components["web"].blocklist.len(), 2);
+        assert!(back.components["web"].blocklist.contains(&"1.0.5".into()));
+    }
+
+    #[test]
+    fn blocklist_defaults_to_empty_when_absent_from_toml() {
+        // Older state files without blocklist should still deserialize.
+        let s = r#"
+[components.web]
+current_version = "1.0.0"
+"#;
+        let back: ArchanistState = toml::from_str(s).unwrap();
+        assert!(back.components["web"].blocklist.is_empty());
     }
 }
