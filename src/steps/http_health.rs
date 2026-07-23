@@ -58,16 +58,6 @@ impl Step for HttpHealth {
         "http_health"
     }
 
-    fn describe(&self) -> String {
-        format!(
-            "poll {} until HTTP {} (timeout {}s, interval {}s)",
-            self.url,
-            self.expected_status,
-            self.timeout.as_secs(),
-            self.interval.as_secs()
-        )
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let url = interpolate(&self.url, &ctx.vars)

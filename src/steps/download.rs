@@ -39,10 +39,6 @@ impl Step for Download {
         "download"
     }
 
-    fn describe(&self) -> String {
-        format!("download {} -> {}", self.url, self.dest)
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let url = interpolate(&self.url, &ctx.vars)

@@ -78,10 +78,6 @@ impl Step for Shell {
         "shell"
     }
 
-    fn describe(&self) -> String {
-        format!("run ({}): {}", self.shell.program(), self.command)
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let command = interpolate(&self.command, &ctx.vars)

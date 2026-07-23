@@ -68,14 +68,6 @@ impl Step for DbMigrate {
         "db_migrate"
     }
 
-    fn describe(&self) -> String {
-        let src = match &self.source {
-            Source::Glob(g) => format!("glob '{}'", g),
-            Source::Files(f) => format!("{} file(s)", f.len()),
-        };
-        format!("run [{}] against {}", self.command.join(" "), src)
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let files: Vec<PathBuf> = match &self.source {

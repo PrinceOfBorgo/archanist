@@ -61,19 +61,11 @@ enum Commands {
     Init,
     /// Print the parsed configuration (useful for troubleshooting).
     Config,
-    /// List configured components.
-    List,
-    /// Print current state.
-    Status,
-    /// Print the planned steps for a component without executing them.
-    DryRun {
-        /// Name of the component to plan.
-        component: String,
-    },
-    /// Execute all steps of a component in order.
-    Run {
-        /// Name of the component to run.
-        component: String,
+    /// Print current state (versions, last check, blocklist).
+    Status {
+        /// Only show this component. Omit to show all.
+        #[arg(short = 'n', long)]
+        component: Option<String>,
     },
     /// Check upstream release feeds for available updates.
     Check {
@@ -94,6 +86,8 @@ enum Commands {
     },
     /// Clear a version from the blocklist so it can be installed again.
     Unblock { component: String, version: String },
+    /// List all built-in step kinds.
+    StepKinds,
 }
 
 fn main() -> Result<()> {
@@ -138,36 +132,9 @@ async fn run_async(cli: Cli) -> Result<()> {
         Commands::Config => {
             println!("{:#?}", cfg);
         }
-        Commands::List => run_list(&cfg),
-        Commands::Status => {
+        Commands::Status { component } => {
             let state = state::ArchanistState::load(&cfg.state_path())?;
-            run_status(&cfg, &state);
-        }
-        Commands::DryRun { component } => {
-            let pipeline = build_component_pipeline(&cfg, component)?;
-            pipeline.dry_run();
-        }
-        Commands::Run { component } => {
-            let pipeline = build_component_pipeline(&cfg, component)?;
-            let state_path = cfg.state_path();
-            let mut state = state::ArchanistState::load(&state_path)?;
-            let component_name = component.clone();
-            pipeline
-                .run(|step, outcome| {
-                    let applied = state::AppliedStep {
-                        kind: step.kind().to_string(),
-                        applied_at: chrono::Utc::now(),
-                        payload: outcome.payload.clone(),
-                    };
-                    state
-                        .components
-                        .entry(component_name.clone())
-                        .or_default()
-                        .applied_steps
-                        .insert(step.id().to_string(), applied);
-                    state.save(&state_path)
-                })
-                .await?;
+            run_status(&cfg, &state, component.as_deref())?;
         }
         Commands::Check { component } => {
             let state_path = cfg.state_path();
@@ -194,21 +161,13 @@ async fn run_async(cli: Cli) -> Result<()> {
             run_unblock(&mut state, component, version)?;
             state.save(&state_path)?;
         }
+        Commands::StepKinds => {
+            for kind in steps::KINDS {
+                println!("{kind}");
+            }
+        }
     }
     Ok(())
-}
-
-fn build_component_pipeline(
-    cfg: &config::ArchanistConfig,
-    component: &str,
-) -> Result<pipeline::Pipeline> {
-    let comp = cfg.components.get(component).with_context(|| {
-        format!(
-            "unknown component '{}' (run `archanist list` to see configured components)",
-            component
-        )
-    })?;
-    pipeline::Pipeline::build(component, comp)
 }
 
 fn load_and_setup(cli: &Cli) -> Result<(config::ArchanistConfig, Option<WorkerGuard>)> {
@@ -284,38 +243,37 @@ fn run_init(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_list(cfg: &config::ArchanistConfig) {
+fn run_status(
+    cfg: &config::ArchanistConfig,
+    state: &state::ArchanistState,
+    filter: Option<&str>,
+) -> Result<()> {
     if cfg.components.is_empty() {
         println!(
             "(no components configured; looked in {})",
             cfg.components_dir.display()
         );
-        return;
+        return Ok(());
     }
-    for name in cfg.component_names() {
+
+    let names: Vec<String> = if let Some(name) = filter {
+        if !cfg.components.contains_key(name) {
+            bail!(
+                "unknown component '{}' (run `archanist step-kinds` to list built-in step types or check your components directory)",
+                name
+            );
+        }
+        vec![name.to_string()]
+    } else {
+        cfg.component_names()
+    };
+
+    for name in names {
         let comp = &cfg.components[&name];
         println!("=== {name} ===");
         if let Some(desc) = &comp.description {
             println!("  description: {desc}");
         }
-        println!("  steps ({}):", comp.steps.len());
-        for step in &comp.steps {
-            println!("    - {} [{}]", step.id, step.kind);
-        }
-        println!();
-    }
-}
-
-fn run_status(cfg: &config::ArchanistConfig, state: &state::ArchanistState) {
-    if cfg.components.is_empty() {
-        println!(
-            "(no components configured; looked in {})",
-            cfg.components_dir.display()
-        );
-        return;
-    }
-    for name in cfg.component_names() {
-        println!("=== {name} ===");
         match state.components.get(&name) {
             Some(s) => {
                 let current = s.current_version.as_deref().unwrap_or("unknown");
@@ -341,6 +299,7 @@ fn run_status(cfg: &config::ArchanistConfig, state: &state::ArchanistState) {
         }
         println!();
     }
+    Ok(())
 }
 
 async fn run_check(

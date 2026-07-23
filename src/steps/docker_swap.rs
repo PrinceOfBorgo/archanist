@@ -88,17 +88,6 @@ impl Step for DockerSwap {
         "docker_swap"
     }
 
-    fn describe(&self) -> String {
-        let self_note = if self.self_update { " [self]" } else { "" };
-        format!(
-            "swap container {} to {} (restart={}){}",
-            self.container,
-            Self::full_image(&self.image, &self.tag),
-            self.restart_policy,
-            self_note
-        )
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let image = interpolate(&self.image, &ctx.vars)

@@ -52,7 +52,6 @@ pub trait Step: Send + Sync {
 
     fn id(&self) -> &str;
     fn kind(&self) -> &str;
-    fn describe(&self) -> String;
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>>;
 
     /// Undo a previously-applied step. Receives the payload recorded by
@@ -78,5 +77,43 @@ pub fn build_step(cfg: &StepConfig) -> Result<Box<dyn Step>> {
         "db_migrate" => Ok(Box::new(db_migrate::DbMigrate::from_config(cfg)?)),
         "docker_swap" => Ok(Box::new(docker_swap::DockerSwap::from_config(cfg)?)),
         other => bail!("step '{}': unsupported type '{}'", cfg.id, other),
+    }
+}
+
+/// Names of all built-in step kinds recognized by [`build_step`].
+pub const KINDS: &[&str] = &[
+    "shell",
+    "download",
+    "http_health",
+    "copy_files",
+    "config_merge",
+    "parse_text",
+    "db_migrate",
+    "docker_swap",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kinds_are_all_registered() {
+        for &kind in KINDS {
+            let cfg = StepConfig {
+                id: "x".into(),
+                kind: kind.into(),
+                extra: toml::Table::new(),
+            };
+            // We don't care whether build_step succeeds (most kinds require
+            // fields we haven't provided); we only care that it doesn't fail
+            // with an "unsupported type" error, which would indicate `KINDS`
+            // drifted out of sync with the match arms.
+            if let Some(e) = build_step(&cfg).err() {
+                assert!(
+                    !e.to_string().contains("unsupported type"),
+                    "KIND {kind:?} listed but not registered in build_step: {e}"
+                );
+            }
+        }
     }
 }

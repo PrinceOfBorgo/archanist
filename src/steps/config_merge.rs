@@ -39,10 +39,6 @@ impl Step for ConfigMerge {
         "config_merge"
     }
 
-    fn describe(&self) -> String {
-        format!("merge {} into {}", self.patch, self.target)
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let target_str = interpolate(&self.target, &ctx.vars)

@@ -38,10 +38,6 @@ impl Step for CopyFiles {
         "copy_files"
     }
 
-    fn describe(&self) -> String {
-        format!("copy {} -> {}", self.src, self.dest)
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let src_str = interpolate(&self.src, &ctx.vars)

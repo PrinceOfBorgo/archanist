@@ -40,10 +40,6 @@ impl Step for ParseText {
         "parse_text"
     }
 
-    fn describe(&self) -> String {
-        format!("scan {} with /{}/", self.source, self.regex.as_str())
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let source = interpolate(&self.source, &ctx.vars)

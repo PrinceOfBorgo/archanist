@@ -29,23 +29,6 @@ impl Pipeline {
         &self.steps
     }
 
-    pub fn dry_run(&self) {
-        println!(
-            "=== dry-run: {} ({} step(s)) ===",
-            self.component_name,
-            self.steps.len()
-        );
-        for (i, step) in self.steps.iter().enumerate() {
-            println!(
-                "  {}. [{}] {} - {}",
-                i + 1,
-                step.kind(),
-                step.id(),
-                step.describe()
-            );
-        }
-    }
-
     /// Run the pipeline. `on_step_complete` is called with the step and its
     /// outcome after each successful step, allowing callers to persist state
     /// (per-step `applied_steps` for rollback) as the pipeline progresses.
