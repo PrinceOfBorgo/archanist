@@ -5,6 +5,7 @@ mod pipeline;
 mod release;
 mod state;
 mod steps;
+mod tui;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -93,9 +94,15 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Init doesn't need async runtime
-    if matches!(cli.command, Commands::Init) {
-        return run_init(&cli.config);
+    // Init and Config don't need the async runtime.
+    match &cli.command {
+        Commands::Init => return run_init(&cli.config),
+        Commands::Config => {
+            let cfg = config::ArchanistConfig::load(&cli.config)?;
+            let state = state::ArchanistState::load(&cfg.state_path())?;
+            return tui::run_config_editor(&cfg, &state);
+        }
+        _ => {}
     }
 
     tokio::runtime::Builder::new_current_thread()
@@ -128,10 +135,7 @@ async fn run_async(cli: Cli) -> Result<()> {
     }
 
     match &cli.command {
-        Commands::Init => unreachable!(),
-        Commands::Config => {
-            println!("{:#?}", cfg);
-        }
+        Commands::Init | Commands::Config => unreachable!(),
         Commands::Status { component } => {
             let state = state::ArchanistState::load(&cfg.state_path())?;
             run_status(&cfg, &state, component.as_deref())?;
