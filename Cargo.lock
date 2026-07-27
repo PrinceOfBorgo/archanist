@@ -105,6 +105,7 @@ dependencies = [
  "ratatui",
  "regex",
  "reqwest",
+ "semver",
  "serde",
  "tokio",
  "toml",

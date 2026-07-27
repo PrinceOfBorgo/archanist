@@ -94,7 +94,7 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Init and Config don't need the async runtime.
+    // Init and Config don't need the async runtime
     match &cli.command {
         Commands::Init => return run_init(&cli.config),
         Commands::Config => {
@@ -135,7 +135,7 @@ async fn run_async(cli: Cli) -> Result<()> {
     }
 
     match &cli.command {
-        Commands::Init | Commands::Config => unreachable!(),
+        Commands::Init | Commands::Config => unreachable!("Init and Config handled before async runtime"),
         Commands::Status { component } => {
             let state = state::ArchanistState::load(&cfg.state_path())?;
             run_status(&cfg, &state, component.as_deref())?;
@@ -331,14 +331,17 @@ async fn run_check(
         };
         print!("{}: checking... ", name);
         match src.fetch_latest().await {
-            Ok(latest) => {
+            Ok(Some(latest)) => {
                 let entry = state.components.entry(name.clone()).or_default();
                 let current = entry
                     .current_version
                     .as_deref()
                     .unwrap_or("(none)")
                     .to_string();
-                let update_available = entry.current_version.as_deref() != Some(latest.as_str());
+                let update_available = match &entry.current_version {
+                    Some(c) => release::is_newer(&latest, c),
+                    None => true,
+                };
                 entry.latest_check_version = Some(latest.clone());
                 entry.last_check = Some(Utc::now());
                 let marker = if update_available {
@@ -347,6 +350,9 @@ async fn run_check(
                     ""
                 };
                 println!("current={}, latest={}{}", current, latest, marker);
+            }
+            Ok(None) => {
+                println!("no stable release available");
             }
             Err(e) => {
                 println!("failed: {:#}", e);
@@ -432,7 +438,11 @@ async fn run_update(
 
         print!("{}: checking... ", name);
         let latest = match src.fetch_latest().await {
-            Ok(v) => v,
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                println!("no stable release available, skipping");
+                continue;
+            }
             Err(e) => {
                 println!("failed: {:#}", e);
                 continue;
@@ -443,7 +453,11 @@ async fn run_update(
         entry.latest_check_version = Some(latest.clone());
         entry.last_check = Some(Utc::now());
 
-        if entry.current_version.as_deref() == Some(latest.as_str()) {
+        let up_to_date = match &entry.current_version {
+            Some(c) => !release::is_newer(&latest, c),
+            None => false,
+        };
+        if up_to_date {
             println!("up to date at {}", latest);
             continue;
         }
