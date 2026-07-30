@@ -15,3 +15,9 @@ state_file = "state.toml"
 
 # Directory containing component recipe files (relative to this config file, or absolute).
 components_dir = "components"
+
+# Name of the component that IS this archanist itself (optional). When set,
+# `update`-ing that component wires `is_self_update = true` into every step's
+# context, so `docker_swap` automatically signals exit_after and lets the new
+# container image take over.
+# self_component = "archanist"

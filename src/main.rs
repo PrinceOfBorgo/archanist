@@ -34,6 +34,12 @@ state_file = "state.toml"
 
 # Directory containing component recipe files (relative to this config file, or absolute).
 components_dir = "components"
+
+# Name of the component that IS this archanist itself (optional). When set,
+# `update`-ing that component wires `is_self_update = true` into every step's
+# context, so `docker_swap` automatically signals exit_after and lets the new
+# container image take over.
+# self_component = "archanist"
 "#;
 
 #[derive(Parser)]
@@ -135,7 +141,9 @@ async fn run_async(cli: Cli) -> Result<()> {
     }
 
     match &cli.command {
-        Commands::Init | Commands::Config => unreachable!("Init and Config handled before async runtime"),
+        Commands::Init | Commands::Config => {
+            unreachable!("Init and Config handled before async runtime")
+        }
         Commands::Status { component } => {
             let state = state::ArchanistState::load(&cfg.state_path())?;
             run_status(&cfg, &state, component.as_deref())?;
@@ -387,11 +395,13 @@ async fn run_rollback(
         return Ok(());
     }
 
-    let pipeline = pipeline::Pipeline::build(component, comp)?;
+    let is_self_update = cfg.self_component.as_deref() == Some(component);
+    let pipeline = pipeline::Pipeline::build(component, comp, is_self_update)?;
 
     // Roll back in reverse definition order so later steps unwind before earlier ones.
     let ctx = steps::StepCtx {
         vars: std::sync::Arc::new(interp::Env::new()),
+        is_self_update,
     };
     for step in pipeline.steps().iter().rev() {
         if let Some(applied) = entry.applied_steps.get(step.id()).cloned() {
@@ -476,10 +486,19 @@ async fn run_update(
             .to_string();
         println!("updating {} -> {}", current, latest);
 
-        let pipeline = pipeline::Pipeline::build(name, comp)?;
+        let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
+        let pipeline = pipeline::Pipeline::build(name, comp, is_self_update)?;
         let component_name = name.clone();
+
+        // Seed the pipeline env with built-in vars and per-component `[vars]`
+        let mut base_env = interp::Env::new();
+        base_env.insert("version".into(), latest.clone());
+        base_env.insert("current_version".into(), current.clone());
+        base_env.insert("component".into(), name.clone());
+        let initial_env = interp::expand_component_vars(&base_env, &comp.vars);
+
         let result = pipeline
-            .run(|step, outcome| {
+            .run(initial_env, |step, outcome| {
                 let applied = state::AppliedStep {
                     kind: step.kind().to_string(),
                     applied_at: Utc::now(),

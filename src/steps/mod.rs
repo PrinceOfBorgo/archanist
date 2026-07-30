@@ -19,6 +19,10 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Execution context handed to every step.
 pub struct StepCtx {
     pub vars: Arc<Env>,
+    /// True when the pipeline is updating the archanist itself. Consumed by
+    /// `docker_swap` to force `exit_after` even when the step's own `self`
+    /// field is unset (declarative sugar for "this component is me").
+    pub is_self_update: bool,
 }
 
 /// Result of a step's `apply` call.

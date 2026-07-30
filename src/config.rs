@@ -17,6 +17,7 @@ pub struct ArchanistConfig {
     pub state_file: PathBuf,
     pub components_dir: PathBuf,
     pub base_dir: PathBuf,
+    pub self_component: Option<String>,
     pub components: HashMap<String, ComponentConfig>,
 }
 
@@ -34,6 +35,7 @@ pub struct ComponentConfig {
     pub description: Option<String>,
     pub steps: Vec<StepConfig>,
     pub release: Option<ReleaseSource>,
+    pub vars: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -70,6 +72,9 @@ struct MainConfigFile {
 
     #[serde(default = "default_components_dir")]
     components_dir: PathBuf,
+
+    #[serde(default)]
+    self_component: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +86,8 @@ struct ComponentConfigFile {
     steps: Vec<StepConfig>,
     #[serde(default)]
     release: Option<ReleaseSource>,
+    #[serde(default)]
+    vars: HashMap<String, String>,
 }
 
 fn default_log_level() -> String {
@@ -157,6 +164,7 @@ impl ArchanistConfig {
             state_file: main.state_file,
             components_dir,
             base_dir,
+            self_component: main.self_component,
             components,
         })
     }
@@ -214,6 +222,7 @@ impl ArchanistConfig {
                     description: file.description,
                     steps: file.steps,
                     release: file.release,
+                    vars: file.vars,
                 },
             );
         }

@@ -138,7 +138,7 @@ impl Step for DockerSwap {
                 .with_context(|| format!("step '{}': failed to serialize payload", self.id))?;
 
             Ok(StepOutcome {
-                exit_after: self.self_update,
+                exit_after: self.self_update || ctx.is_self_update,
                 payload: payload_val,
                 ..Default::default()
             })

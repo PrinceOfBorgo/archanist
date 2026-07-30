@@ -7,20 +7,27 @@ use tracing::{debug, info};
 
 pub struct Pipeline {
     component_name: String,
+    is_self_update: bool,
     steps: Vec<Box<dyn Step>>,
 }
 
 impl Pipeline {
-    pub fn build(name: &str, cfg: &ComponentConfig) -> Result<Self> {
+    pub fn build(name: &str, cfg: &ComponentConfig, is_self_update: bool) -> Result<Self> {
         let steps = cfg
             .steps
             .iter()
             .map(steps::build_step)
             .collect::<Result<Vec<_>>>()
             .with_context(|| format!("failed to build pipeline for '{}'", name))?;
-        debug!("built pipeline for '{}' with {} step(s)", name, steps.len());
+        debug!(
+            "built pipeline for '{}' with {} step(s) (self_update={})",
+            name,
+            steps.len(),
+            is_self_update
+        );
         Ok(Self {
             component_name: name.to_string(),
+            is_self_update,
             steps,
         })
     }
@@ -29,10 +36,11 @@ impl Pipeline {
         &self.steps
     }
 
-    /// Run the pipeline. `on_step_complete` is called with the step and its
-    /// outcome after each successful step, allowing callers to persist state
-    /// (per-step `applied_steps` for rollback) as the pipeline progresses.
-    pub async fn run<F>(&self, mut on_step_complete: F) -> Result<()>
+    /// Run the pipeline starting from `initial_env`. `on_step_complete` is
+    /// called with the step and its outcome after each successful step,
+    /// allowing callers to persist state (per-step `applied_steps` for
+    /// rollback) as the pipeline progresses.
+    pub async fn run<F>(&self, initial_env: Env, mut on_step_complete: F) -> Result<()>
     where
         F: FnMut(&dyn Step, &StepOutcome) -> Result<()>,
     {
@@ -41,11 +49,12 @@ impl Pipeline {
             "running pipeline for component '{}' ({} step(s))",
             self.component_name, total
         );
-        let mut env = Env::new();
+        let mut env = initial_env;
         for (i, step) in self.steps.iter().enumerate() {
             info!("step {}/{}: [{}] {}", i + 1, total, step.kind(), step.id());
             let ctx = StepCtx {
                 vars: Arc::new(env.clone()),
+                is_self_update: self.is_self_update,
             };
             let outcome = step
                 .apply(&ctx)
