@@ -38,7 +38,7 @@ pub struct ComponentConfig {
     pub vars: HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct StepConfig {
     pub id: String,
     #[serde(rename = "type")]

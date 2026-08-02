@@ -1,5 +1,4 @@
 use crate::config::StepConfig;
-use crate::interp::interpolate;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -58,10 +57,9 @@ impl Step for HttpHealth {
         "http_health"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let url = interpolate(&self.url, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate url", self.id))?;
+            let url = &self.url;
             info!(
                 "[{}] polling {} for HTTP {}",
                 self.id, url, self.expected_status
@@ -74,7 +72,7 @@ impl Step for HttpHealth {
 
             let start = Instant::now();
             loop {
-                match client.get(&url).send().await {
+                match client.get(url).send().await {
                     Ok(resp) => {
                         let status = resp.status().as_u16();
                         if status == self.expected_status {

@@ -10,12 +10,12 @@ pub enum ReleaseSource {
     /// Latest non-draft, non-prerelease GitHub release for `repo` (owner/name).
     Github { repo: String },
     /// Same as `Github` but derives owner/name from a `ghcr.io/owner/name[:tag]`
-    /// image reference — handy for components that already declare their
+    /// image reference - handy for components that already declare their
     /// container image and want release checks to follow the same GitHub org.
     GhcrAuto { image: String },
     /// Highest semver-parseable tag from a Docker Hub repository.
     DockerHub { image: String },
-    /// Fixed version — no upstream check. Useful for third-party artefacts
+    /// Fixed version - no upstream check. Useful for third-party artefacts
     /// where the archanist just applies a known-good version.
     Pinned { version: String },
 }
@@ -208,7 +208,9 @@ mod tests {
 
     #[test]
     fn extract_repo_from_ghcr_rejects_wrong_host() {
-        let err = extract_repo_from_ghcr("docker.io/owner/name").err().unwrap();
+        let err = extract_repo_from_ghcr("docker.io/owner/name")
+            .err()
+            .unwrap();
         assert!(err.to_string().contains("not a ghcr.io reference"));
     }
 

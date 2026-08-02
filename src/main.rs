@@ -22,7 +22,7 @@ const DEFAULT_CONFIG_TOML: &str = r#"schema = 1
 # Console log level: trace | debug | info | warn | error
 log_level = "info"
 
-# Optional file logging (omit log_dir to disable).
+# [Optional] File logging settings (omit log_dir to disable).
 # Files are named <log_file_prefix>.<date>.log and written under log_dir.
 log_dir = "logs"
 log_file_prefix = "archanist"
@@ -35,10 +35,8 @@ state_file = "state.toml"
 # Directory containing component recipe files (relative to this config file, or absolute).
 components_dir = "components"
 
-# Name of the component that IS this archanist itself (optional). When set,
-# `update`-ing that component wires `is_self_update = true` into every step's
-# context, so `docker_swap` automatically signals exit_after and lets the new
-# container image take over.
+# [optional] Which component file represents this archanist for self-update purposes.
+# Must match a filename in components_dir (without .toml extension).
 # self_component = "archanist"
 "#;
 
@@ -396,15 +394,17 @@ async fn run_rollback(
     }
 
     let is_self_update = cfg.self_component.as_deref() == Some(component);
-    let pipeline = pipeline::Pipeline::build(component, comp, is_self_update)?;
 
-    // Roll back in reverse definition order so later steps unwind before earlier ones.
+    // Rollback consults each step's payload snapshot rather than its
+    // configured template, so we build steps from raw (un-interpolated)
+    // config and never spin up a pipeline runner here
     let ctx = steps::StepCtx {
-        vars: std::sync::Arc::new(interp::Env::new()),
         is_self_update,
     };
-    for step in pipeline.steps().iter().rev() {
-        if let Some(applied) = entry.applied_steps.get(step.id()).cloned() {
+    for step_cfg in comp.steps.iter().rev() {
+        if let Some(applied) = entry.applied_steps.get(&step_cfg.id).cloned() {
+            let step = steps::build_step(step_cfg)
+                .with_context(|| format!("failed to build step '{}'", step_cfg.id))?;
             println!(
                 "rolling back step '{}' (applied at {})",
                 step.id(),
@@ -487,7 +487,7 @@ async fn run_update(
         println!("updating {} -> {}", current, latest);
 
         let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
-        let pipeline = pipeline::Pipeline::build(name, comp, is_self_update)?;
+        let pipeline = pipeline::Pipeline::build(name, comp, is_self_update);
         let component_name = name.clone();
 
         // Seed the pipeline env with built-in vars and per-component `[vars]`

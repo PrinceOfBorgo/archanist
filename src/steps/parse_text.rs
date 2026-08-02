@@ -1,5 +1,5 @@
 use crate::config::StepConfig;
-use crate::interp::{Env, interpolate};
+use crate::interp::Env;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -40,17 +40,16 @@ impl Step for ParseText {
         "parse_text"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let source = interpolate(&self.source, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate source", self.id))?;
+            let source = &self.source;
             info!(
                 "[{}] scanning {} with /{}/",
                 self.id,
                 source,
                 self.regex.as_str()
             );
-            let content = tokio::fs::read_to_string(&source)
+            let content = tokio::fs::read_to_string(source)
                 .await
                 .with_context(|| format!("step '{}': failed to read {}", self.id, source))?;
 

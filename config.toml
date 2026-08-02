@@ -3,7 +3,7 @@ schema = 1
 # Console log level: trace | debug | info | warn | error
 log_level = "info"
 
-# Optional file logging (omit log_dir to disable).
+# [Optional] File logging settings (omit log_dir to disable).
 # Files are named <log_file_prefix>.<date>.log and written under log_dir.
 log_dir = "logs"
 log_file_prefix = "archanist"
@@ -16,8 +16,6 @@ state_file = "state.toml"
 # Directory containing component recipe files (relative to this config file, or absolute).
 components_dir = "components"
 
-# Name of the component that IS this archanist itself (optional). When set,
-# `update`-ing that component wires `is_self_update = true` into every step's
-# context, so `docker_swap` automatically signals exit_after and lets the new
-# container image take over.
+# [optional] Which component file represents this archanist for self-update purposes.
+# Must match a filename in components_dir (without .toml extension).
 # self_component = "archanist"

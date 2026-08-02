@@ -1,5 +1,4 @@
 use crate::config::StepConfig;
-use crate::interp::interpolate;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -39,13 +38,10 @@ impl Step for Download {
         "download"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let url = interpolate(&self.url, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate url", self.id))?;
-            let dest_str = interpolate(&self.dest, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate dest", self.id))?;
-            let dest = Path::new(&dest_str);
+            let url = &self.url;
+            let dest = Path::new(&self.dest);
 
             info!("[{}] downloading {} to {}", self.id, url, dest.display());
 
@@ -63,7 +59,7 @@ impl Step for Download {
                 .with_context(|| format!("step '{}': failed to build HTTP client", self.id))?;
 
             let resp = client
-                .get(&url)
+                .get(url)
                 .send()
                 .await
                 .with_context(|| format!("step '{}': failed to GET {}", self.id, url))?;

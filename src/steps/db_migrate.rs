@@ -1,5 +1,4 @@
 use crate::config::StepConfig;
-use crate::interp::interpolate;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -68,15 +67,12 @@ impl Step for DbMigrate {
         "db_migrate"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
             let files: Vec<PathBuf> = match &self.source {
                 Source::Glob(pattern) => {
-                    let pattern = interpolate(pattern, &ctx.vars).with_context(|| {
-                        format!("step '{}': failed to interpolate glob", self.id)
-                    })?;
                     info!("[{}] expanding glob: {}", self.id, pattern);
-                    let mut matches: Vec<PathBuf> = glob::glob(&pattern)
+                    let mut matches: Vec<PathBuf> = glob::glob(pattern)
                         .with_context(|| format!("step '{}': invalid glob '{}'", self.id, pattern))?
                         .filter_map(|r| r.ok())
                         .collect();
@@ -87,13 +83,8 @@ impl Step for DbMigrate {
                     matches
                 }
                 Source::Files(list) => {
-                    let mut resolved: Vec<PathBuf> = Vec::with_capacity(list.len());
-                    for raw in list {
-                        let rendered = interpolate(raw, &ctx.vars).with_context(|| {
-                            format!("step '{}': failed to interpolate file '{}'", self.id, raw)
-                        })?;
-                        resolved.push(PathBuf::from(rendered));
-                    }
+                    let mut resolved: Vec<PathBuf> =
+                        list.iter().map(PathBuf::from).collect();
                     resolved.sort_by(|a, b| a.file_stem().cmp(&b.file_stem()));
                     resolved
                 }
@@ -106,13 +97,7 @@ impl Step for DbMigrate {
                 }
             }
 
-            let cwd =
-                match &self.cwd {
-                    Some(c) => Some(interpolate(c, &ctx.vars).with_context(|| {
-                        format!("step '{}': failed to interpolate cwd", self.id)
-                    })?),
-                    None => None,
-                };
+            let cwd = self.cwd.as_deref();
 
             info!("[{}] applying {} migration(s)", self.id, files.len());
             for file in &files {
@@ -120,7 +105,7 @@ impl Step for DbMigrate {
                 info!("[{}] $ {}", self.id, argv.join(" "));
                 let mut cmd = Command::new(&argv[0]);
                 cmd.args(&argv[1..]);
-                if let Some(c) = &cwd {
+                if let Some(c) = cwd {
                     cmd.current_dir(c);
                 }
                 let status = cmd
@@ -143,8 +128,9 @@ impl Step for DbMigrate {
 }
 
 /// Substitute `{file}` (full path) and `{name}` (stem) in every argv element.
-/// Placeholders are step-local; global `{var}` interpolation is applied
-/// separately to `glob` / `files` / `cwd`.
+/// Placeholders are step-local; pipeline-wide `${var}` interpolation runs
+/// before the step is built, so those references are already resolved by
+/// the time we get here.
 fn render_argv(template: &[String], file: &Path) -> Vec<String> {
     let file_str = file.to_string_lossy().to_string();
     let name = file

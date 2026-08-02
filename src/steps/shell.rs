@@ -1,5 +1,4 @@
 use crate::config::StepConfig;
-use crate::interp::interpolate;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -78,14 +77,12 @@ impl Step for Shell {
         "shell"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let command = interpolate(&self.command, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate command", self.id))?;
             let program = self.shell.program();
-            info!("[{}] running via {}: {}", self.id, program, command);
+            info!("[{}] running via {}: {}", self.id, program, self.command);
             let status = Command::new(program)
-                .args(self.shell.args(&command))
+                .args(self.shell.args(&self.command))
                 .status()
                 .await
                 .with_context(|| format!("step '{}': failed to spawn {}", self.id, program))?;

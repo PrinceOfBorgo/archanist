@@ -1,6 +1,5 @@
 use crate::config::StepConfig;
 use crate::docker::DockerClient;
-use crate::interp::interpolate;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -90,48 +89,29 @@ impl Step for DockerSwap {
 
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let image = interpolate(&self.image, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate image", self.id))?;
-            let container = interpolate(&self.container, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate container", self.id))?;
-            let tag = interpolate(&self.tag, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate tag", self.id))?;
-            let mut env: Vec<String> = Vec::with_capacity(self.env.len());
-            for (i, e) in self.env.iter().enumerate() {
-                env.push(interpolate(e, &ctx.vars).with_context(|| {
-                    format!("step '{}': failed to interpolate env[{}]", self.id, i)
-                })?);
-            }
-            let mut volumes: Vec<String> = Vec::with_capacity(self.volumes.len());
-            for (i, v) in self.volumes.iter().enumerate() {
-                volumes.push(interpolate(v, &ctx.vars).with_context(|| {
-                    format!("step '{}': failed to interpolate volumes[{}]", self.id, i)
-                })?);
-            }
-
-            let full_image = Self::full_image(&image, &tag);
+            let full_image = Self::full_image(&self.image, &self.tag);
             let docker = DockerClient::connect()?;
 
-            let previous_image = docker.container_image(&container).await.ok().flatten();
+            let previous_image = docker.container_image(&self.container).await.ok().flatten();
 
             docker.pull_image(&full_image).await?;
-            docker.stop_container(&container).await?;
-            docker.remove_container(&container).await?;
+            docker.stop_container(&self.container).await?;
+            docker.remove_container(&self.container).await?;
             docker
                 .run_container(
-                    &container,
+                    &self.container,
                     &full_image,
-                    env.clone(),
-                    volumes.clone(),
+                    self.env.clone(),
+                    self.volumes.clone(),
                     Some(self.restart_policy.clone()),
                 )
                 .await?;
 
             let payload = SwapPayload {
-                container: container.clone(),
+                container: self.container.clone(),
                 previous_image,
-                env,
-                volumes,
+                env: self.env.clone(),
+                volumes: self.volumes.clone(),
                 restart_policy: self.restart_policy.clone(),
             };
             let payload_val = toml::Value::try_from(&payload)

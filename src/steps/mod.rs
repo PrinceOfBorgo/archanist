@@ -8,17 +8,15 @@ pub mod parse_text;
 pub mod shell;
 
 use crate::config::StepConfig;
-use crate::interp::Env;
-use anyhow::{Result, bail};
+use crate::interp::{self, Env};
+use anyhow::{Context, Result, bail};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Execution context handed to every step.
 pub struct StepCtx {
-    pub vars: Arc<Env>,
     /// True when the pipeline is updating the archanist itself. Consumed by
     /// `docker_swap` to force `exit_after` even when the step's own `self`
     /// field is unset (declarative sugar for "this component is me").
@@ -82,6 +80,33 @@ pub fn build_step(cfg: &StepConfig) -> Result<Box<dyn Step>> {
         "docker_swap" => Ok(Box::new(docker_swap::DockerSwap::from_config(cfg)?)),
         other => bail!("step '{}': unsupported type '{}'", cfg.id, other),
     }
+}
+
+/// Build a step with its body pre-interpolated against `env`. Every `${var}`
+/// reference in every string value inside the step's body table is resolved
+/// before the concrete step type deserializes its fields, so `apply`
+/// implementations see fully-resolved values and don't need to interpolate
+/// themselves.
+///
+/// Rollback uses the raw [`build_step`] path instead, since it consults the
+/// stored payload rather than the config templates.
+pub fn build_step_interpolated(cfg: &StepConfig, env: &Env) -> Result<Box<dyn Step>> {
+    let raw_body = toml::Value::Table(cfg.extra.clone());
+    let interp_body = interp::interpolate_toml(&raw_body, env)
+        .with_context(|| format!("step '{}': failed to interpolate body", cfg.id))?;
+    let extra = match interp_body {
+        toml::Value::Table(t) => t,
+        _ => bail!(
+            "step '{}': body did not resolve to a table",
+            cfg.id
+        ),
+    };
+    let interp_cfg = StepConfig {
+        id: cfg.id.clone(),
+        kind: cfg.kind.clone(),
+        extra,
+    };
+    build_step(&interp_cfg)
 }
 
 /// Names of all built-in step kinds recognized by [`build_step`].

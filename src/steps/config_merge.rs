@@ -1,5 +1,4 @@
 use crate::config::StepConfig;
-use crate::interp::interpolate;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -39,14 +38,10 @@ impl Step for ConfigMerge {
         "config_merge"
     }
 
-    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
-            let target_str = interpolate(&self.target, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate target", self.id))?;
-            let patch_str = interpolate(&self.patch, &ctx.vars)
-                .with_context(|| format!("step '{}': failed to interpolate patch", self.id))?;
-            let target = Path::new(&target_str);
-            let patch = Path::new(&patch_str);
+            let target = Path::new(&self.target);
+            let patch = Path::new(&self.patch);
 
             info!(
                 "[{}] merging {} into {}",
