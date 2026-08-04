@@ -1,3 +1,9 @@
+//! `config_merge`: deep-merge a TOML `patch` file into a `target` file.
+//!
+//! Uses [`toml_edit`] so target comments and key ordering are preserved.
+//! Values in `patch` overwrite values in `target`; nested tables
+//! recurse; missing keys are added.
+
 use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};

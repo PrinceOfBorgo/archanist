@@ -1,3 +1,18 @@
+//! Release-source resolution: how to discover the latest available
+//! version for a component.
+//!
+//! Four source kinds are supported:
+//! - [`ReleaseSource::Github`] - latest non-draft, non-prerelease release
+//!   from a `owner/name` repo.
+//! - [`ReleaseSource::GhcrAuto`] - same as `Github`, but the repo is
+//!   derived from a `ghcr.io/owner/name` image reference.
+//! - [`ReleaseSource::DockerHub`] - highest semver-parseable tag from a
+//!   Docker Hub repository.
+//! - [`ReleaseSource::Pinned`] - fixed version, no upstream check.
+//!
+//! [`is_newer`] compares versions using semver semantics with a lenient
+//! `v`-prefix strip.
+
 use anyhow::{Context, Result, bail};
 use semver::Version;
 use serde::Deserialize;

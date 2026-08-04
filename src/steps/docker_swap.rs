@@ -1,3 +1,11 @@
+//! `docker_swap`: pull a new image and (re)create the target container.
+//!
+//! On rollback the container is restored to the previously-recorded
+//! image, if one was captured at apply time. When `self = true` (or
+//! the component is the configured `self_component`), the step signals
+//! `exit_after` so the pipeline stops cleanly and the new container
+//! image can take over.
+
 use crate::config::StepConfig;
 use crate::docker::DockerClient;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};

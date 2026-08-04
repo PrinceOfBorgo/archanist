@@ -1,3 +1,9 @@
+//! `parse_text`: read a text file, extract data with a regex, and
+//! publish the named captures as pipeline vars for subsequent steps.
+//!
+//! Named capture groups become variables of the same name in the
+//! outgoing [`StepOutcome::exported_vars`].
+
 use crate::config::StepConfig;
 use crate::interp::Env;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};

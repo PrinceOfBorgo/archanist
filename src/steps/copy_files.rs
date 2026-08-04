@@ -1,3 +1,7 @@
+//! `copy_files`: copy a file, or recursively mirror a directory tree,
+//! from `src` to `dest`. Missing destination parents are created.
+//! Files at the destination are overwritten.
+
 use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};

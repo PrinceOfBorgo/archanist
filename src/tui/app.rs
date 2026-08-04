@@ -1,3 +1,8 @@
+//! TUI application state and main event loop.
+//!
+//! Owns the terminal setup / teardown, holds the currently-selected
+//! component, and dispatches key events to navigate the viewer.
+
 use crate::config::ArchanistConfig;
 use crate::state::ArchanistState;
 use crate::tui::render;

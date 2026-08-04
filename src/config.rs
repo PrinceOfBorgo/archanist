@@ -1,3 +1,18 @@
+//! Configuration model for the archanist.
+//!
+//! The configuration is split across two locations:
+//! - **Main config** (`config.toml`): global settings (log level and
+//!   rotation, state file path, components dir, and the optional
+//!   `self_component` marker).
+//! - **Component recipes** (`<components_dir>/<name>.toml`): one file
+//!   per component, declaring an optional `[release]` source, a
+//!   `[vars]` table of interpolation vars, and an ordered `[[steps]]`
+//!   list.
+//!
+//! Both formats carry a `schema = N` field; unsupported schemas are
+//! rejected loudly so an old binary never silently mis-reads a newer
+//! layout.
+
 use crate::release::ReleaseSource;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;

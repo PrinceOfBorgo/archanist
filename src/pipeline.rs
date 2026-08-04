@@ -1,3 +1,12 @@
+//! High-level orchestration: drives the [`Step`] pipeline for one
+//! component.
+//!
+//! Each step's body is interpolated against the current env immediately
+//! before the step is built, so vars exported by earlier steps (via
+//! [`StepOutcome::exported_vars`]) are visible to later ones. State is
+//! persisted per-step through the `on_step_complete` callback so a
+//! failed run can be resumed or rolled back.
+
 use crate::config::{ComponentConfig, StepConfig};
 use crate::interp::Env;
 use crate::steps::{self, Step, StepCtx, StepOutcome};

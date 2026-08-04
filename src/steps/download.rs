@@ -1,3 +1,7 @@
+//! `download`: fetch a file over HTTP into the target path. Missing
+//! parent directories are created automatically. Typically used to
+//! stage a release bundle for later `copy_files` / `db_migrate` steps.
+
 use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};

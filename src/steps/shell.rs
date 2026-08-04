@@ -1,3 +1,8 @@
+//! `shell`: run an arbitrary command. The escape hatch for anything
+//! not covered by a dedicated step kind. The shell interpreter
+//! (`cmd`, `sh`, `pwsh`, `powershell`) is selectable per-step and
+//! defaults to the platform-native choice.
+
 use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
@@ -11,12 +16,23 @@ pub struct Shell {
     shell: ShellKind,
 }
 
+/// Which shell interpreter to invoke for the `command`.
+///
+/// Deserialized from the step's `shell` field. When omitted, the step
+/// falls back to [`ShellKind::default_for_platform`] (`cmd` on Windows,
+/// `sh` elsewhere).
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShellKind {
+    /// Windows `cmd.exe`, invoked as `cmd /C <command>`.
     Cmd,
+    /// POSIX `sh`, invoked as `sh -c <command>`.
     Sh,
+    /// PowerShell 7+ (`pwsh`), invoked with
+    /// `-NoProfile -NonInteractive -Command <command>`.
     Pwsh,
+    /// Windows PowerShell 5.1 (`powershell`), same flags as [`Self::Pwsh`].
+    /// Selected via the TOML value `"powershell"`.
     #[serde(rename = "powershell")]
     WinPwsh,
 }

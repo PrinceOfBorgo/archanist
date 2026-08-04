@@ -1,3 +1,9 @@
+//! [`Step`] trait, execution context, and the built-in step dispatch.
+//!
+//! Adding a new step kind = implement [`Step`] in a submodule and add
+//! it to the `match` inside [`build_step`] (and to [`KINDS`] so
+//! `archanist step-kinds` lists it).
+
 pub mod config_merge;
 pub mod copy_files;
 pub mod db_migrate;
@@ -96,10 +102,7 @@ pub fn build_step_interpolated(cfg: &StepConfig, env: &Env) -> Result<Box<dyn St
         .with_context(|| format!("step '{}': failed to interpolate body", cfg.id))?;
     let extra = match interp_body {
         toml::Value::Table(t) => t,
-        _ => bail!(
-            "step '{}': body did not resolve to a table",
-            cfg.id
-        ),
+        _ => bail!("step '{}': body did not resolve to a table", cfg.id),
     };
     let interp_cfg = StepConfig {
         id: cfg.id.clone(),

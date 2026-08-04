@@ -1,3 +1,20 @@
+//! `${var}` interpolation over strings and [`toml::Value`] trees.
+//!
+//! Syntax:
+//! - `${name}` is replaced with the value of `name` in the [`Env`].
+//!   An unresolved reference is a hard error.
+//! - `${env.NAME}` reads from the process environment. The pipeline
+//!   [`Env`] takes precedence, so callers (or tests) can shadow OS
+//!   values by inserting an `env.NAME` key beforehand.
+//! - `$$` escapes to a literal `$`.
+//! - Bare `{...}` (without a leading `$`) passes through untouched, so
+//!   step-local placeholders such as `db_migrate`'s `{file}` / `{name}`
+//!   coexist with pipeline vars.
+//!
+//! The pipeline calls [`interpolate_toml`] on each step body before
+//! building the step, so `apply` implementations see fully-resolved
+//! values and never need to interpolate themselves.
+
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 

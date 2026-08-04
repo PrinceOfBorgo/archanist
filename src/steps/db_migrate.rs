@@ -1,3 +1,11 @@
+//! `db_migrate`: driver-agnostic forward-only migration runner.
+//!
+//! Migration files are discovered via `glob` **or** listed explicitly
+//! in `files` (the two are mutually exclusive) and applied in
+//! lexicographic order of file stem. Each file is passed to a
+//! user-supplied `command` template with the placeholders `{file}`
+//! (full path) and `{name}` (file stem) substituted per invocation.
+
 use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
@@ -13,18 +21,36 @@ pub struct DbMigrate {
     cwd: Option<String>,
 }
 
+/// How migration files are discovered. Populated in [`DbMigrate::from_config`]
+/// from the mutually-exclusive `glob` / `files` fields of the raw body.
 enum Source {
+    /// Filesystem glob pattern expanded at apply time. Errors if it
+    /// matches no files.
     Glob(String),
+    /// Explicit, pre-resolved list of paths.
     Files(Vec<String>),
 }
 
+/// Raw TOML shape of a `db_migrate` step body, before validation.
+///
+/// [`DbMigrate::from_config`] then enforces the invariants that a raw
+/// deserialize can't express: exactly one of `glob` / `files` must be
+/// set, and `command` must be non-empty.
 #[derive(Deserialize)]
 struct DbMigrateRaw {
+    /// Filesystem glob pattern for discovering migration files.
+    /// Mutually exclusive with [`Self::files`].
     #[serde(default)]
     glob: Option<String>,
+    /// Explicit list of migration file paths.
+    /// Mutually exclusive with [`Self::glob`].
     #[serde(default)]
     files: Option<Vec<String>>,
+    /// Command template used to apply each migration. `{file}` and
+    /// `{name}` (see [`render_argv`]) are substituted per invocation.
+    /// Must contain at least one element (the program to run).
     command: Vec<String>,
+    /// Optional working directory for the spawned migration process.
     #[serde(default)]
     cwd: Option<String>,
 }

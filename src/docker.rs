@@ -1,3 +1,10 @@
+//! Thin async wrapper around the Docker daemon via [`bollard`].
+//!
+//! Exposes just the handful of operations `docker_swap` needs: pull an
+//! image, stop / remove / (re)create a container, and read a running
+//! container's current image reference. Everything else (networks,
+//! healthchecks, exec) is deliberately out of scope.
+
 use anyhow::{Context, Result};
 use bollard::Docker;
 use bollard::models::{

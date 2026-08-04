@@ -1,3 +1,15 @@
+//! Persistent state for the archanist.
+//!
+//! Tracks per-component:
+//! - the currently-installed version and its predecessor,
+//! - the last release check (timestamp and version seen),
+//! - each successfully-applied step and its opaque payload (consumed by
+//!   rollback), and
+//! - a `blocklist` of versions the operator has told us to skip.
+//!
+//! The whole state is round-tripped as TOML through [`ArchanistState::load`]
+//! and [`ArchanistState::save`].
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

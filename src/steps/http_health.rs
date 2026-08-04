@@ -1,3 +1,7 @@
+//! `http_health`: poll an HTTP endpoint until it returns the expected
+//! status code. Used after `docker_swap` to gate on the new container
+//! actually being ready before the pipeline moves on.
+
 use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
