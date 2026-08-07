@@ -4,7 +4,6 @@
 //! Values in `patch` overwrite values in `target`; nested tables
 //! recurse; missing keys are added.
 
-use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -13,7 +12,6 @@ use toml_edit::{DocumentMut, Table};
 use tracing::info;
 
 pub struct ConfigMerge {
-    id: String,
     target: String,
     patch: String,
 }
@@ -24,34 +22,26 @@ struct ConfigMergeRaw {
     patch: String,
 }
 
-impl Step for ConfigMerge {
-    fn from_config(cfg: &StepConfig) -> Result<Self> {
-        let raw: ConfigMergeRaw = toml::Value::Table(cfg.extra.clone())
-            .try_into()
-            .with_context(|| format!("step '{}': invalid config_merge config", cfg.id))?;
+impl ConfigMerge {
+    pub fn from_body(body: toml::Value) -> Result<Self> {
+        let raw: ConfigMergeRaw = body.try_into().context("invalid config_merge config")?;
         Ok(Self {
-            id: cfg.id.clone(),
             target: raw.target,
             patch: raw.patch,
         })
     }
+}
 
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn kind(&self) -> &str {
-        "config_merge"
-    }
-
-    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+impl Step for ConfigMerge {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
+            let id = &ctx.step_id;
             let target = Path::new(&self.target);
             let patch = Path::new(&self.patch);
 
             info!(
                 "[{}] merging {} into {}",
-                self.id,
+                id,
                 patch.display(),
                 target.display()
             );
@@ -59,14 +49,14 @@ impl Step for ConfigMerge {
             let target_content = tokio::fs::read_to_string(target).await.with_context(|| {
                 format!(
                     "step '{}': failed to read target {}",
-                    self.id,
+                    id,
                     target.display()
                 )
             })?;
             let patch_content = tokio::fs::read_to_string(patch).await.with_context(|| {
                 format!(
                     "step '{}': failed to read patch {}",
-                    self.id,
+                    id,
                     patch.display()
                 )
             })?;
@@ -74,14 +64,14 @@ impl Step for ConfigMerge {
             let mut target_doc: DocumentMut = target_content.parse().with_context(|| {
                 format!(
                     "step '{}': failed to parse target {} as TOML",
-                    self.id,
+                    id,
                     target.display()
                 )
             })?;
             let patch_doc: DocumentMut = patch_content.parse().with_context(|| {
                 format!(
                     "step '{}': failed to parse patch {} as TOML",
-                    self.id,
+                    id,
                     patch.display()
                 )
             })?;
@@ -93,7 +83,7 @@ impl Step for ConfigMerge {
                 .with_context(|| {
                     format!(
                         "step '{}': failed to write merged {}",
-                        self.id,
+                        id,
                         target.display()
                     )
                 })?;

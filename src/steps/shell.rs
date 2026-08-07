@@ -3,7 +3,6 @@
 //! (`cmd`, `sh`, `pwsh`, `powershell`) is selectable per-step and
 //! defaults to the platform-native choice.
 
-use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -11,7 +10,6 @@ use tokio::process::Command;
 use tracing::info;
 
 pub struct Shell {
-    id: String,
     command: String,
     shell: ShellKind,
 }
@@ -73,38 +71,30 @@ struct ShellRaw {
     shell: Option<ShellKind>,
 }
 
-impl Step for Shell {
-    fn from_config(cfg: &StepConfig) -> Result<Self> {
-        let raw: ShellRaw = toml::Value::Table(cfg.extra.clone())
-            .try_into()
-            .with_context(|| format!("step '{}': invalid shell config", cfg.id))?;
+impl Shell {
+    pub fn from_body(body: toml::Value) -> Result<Self> {
+        let raw: ShellRaw = body.try_into().context("invalid shell config")?;
         Ok(Self {
-            id: cfg.id.clone(),
             command: raw.command,
             shell: raw.shell.unwrap_or_else(ShellKind::default_for_platform),
         })
     }
+}
 
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn kind(&self) -> &str {
-        "shell"
-    }
-
-    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+impl Step for Shell {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
+            let id = &ctx.step_id;
             let program = self.shell.program();
-            info!("[{}] running via {}: {}", self.id, program, self.command);
+            info!("[{}] running via {}: {}", id, program, self.command);
             let status = Command::new(program)
                 .args(self.shell.args(&self.command))
                 .status()
                 .await
-                .with_context(|| format!("step '{}': failed to spawn {}", self.id, program))?;
+                .with_context(|| format!("step '{}': failed to spawn {}", id, program))?;
 
             if !status.success() {
-                bail!("step '{}': command exited with {}", self.id, status);
+                bail!("step '{}': command exited with {}", id, status);
             }
             Ok(StepOutcome::default())
         })

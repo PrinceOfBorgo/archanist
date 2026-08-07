@@ -2,7 +2,6 @@
 //! status code. Used after `docker_swap` to gate on the new container
 //! actually being ready before the pipeline moves on.
 
-use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -11,7 +10,6 @@ use tokio::time::sleep;
 use tracing::{debug, info};
 
 pub struct HttpHealth {
-    id: String,
     url: String,
     expected_status: u16,
     timeout: Duration,
@@ -39,40 +37,32 @@ fn default_interval_secs() -> u64 {
     2
 }
 
-impl Step for HttpHealth {
-    fn from_config(cfg: &StepConfig) -> Result<Self> {
-        let raw: HttpHealthRaw = toml::Value::Table(cfg.extra.clone())
-            .try_into()
-            .with_context(|| format!("step '{}': invalid http_health config", cfg.id))?;
+impl HttpHealth {
+    pub fn from_body(body: toml::Value) -> Result<Self> {
+        let raw: HttpHealthRaw = body.try_into().context("invalid http_health config")?;
         Ok(Self {
-            id: cfg.id.clone(),
             url: raw.url,
             expected_status: raw.expected_status,
             timeout: Duration::from_secs(raw.timeout_secs),
             interval: Duration::from_secs(raw.interval_secs),
         })
     }
+}
 
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn kind(&self) -> &str {
-        "http_health"
-    }
-
-    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+impl Step for HttpHealth {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
+            let id = &ctx.step_id;
             let url = &self.url;
             info!(
                 "[{}] polling {} for HTTP {}",
-                self.id, url, self.expected_status
+                id, url, self.expected_status
             );
             let client = reqwest::Client::builder()
                 .user_agent(concat!("archanist/", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(10))
                 .build()
-                .with_context(|| format!("step '{}': failed to build HTTP client", self.id))?;
+                .with_context(|| format!("step '{}': failed to build HTTP client", id))?;
 
             let start = Instant::now();
             loop {
@@ -82,7 +72,7 @@ impl Step for HttpHealth {
                         if status == self.expected_status {
                             info!(
                                 "[{}] got HTTP {} from {} after {:.1}s",
-                                self.id,
+                                id,
                                 status,
                                 url,
                                 start.elapsed().as_secs_f32()
@@ -91,17 +81,17 @@ impl Step for HttpHealth {
                         }
                         debug!(
                             "[{}] got HTTP {}, expected {}, retrying",
-                            self.id, status, self.expected_status
+                            id, status, self.expected_status
                         );
                     }
                     Err(e) => {
-                        debug!("[{}] request failed ({}), retrying", self.id, e);
+                        debug!("[{}] request failed ({}), retrying", id, e);
                     }
                 }
                 if start.elapsed() >= self.timeout {
                     bail!(
                         "step '{}': did not get HTTP {} from {} within {}s",
-                        self.id,
+                        id,
                         self.expected_status,
                         url,
                         self.timeout.as_secs()

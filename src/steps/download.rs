@@ -2,7 +2,6 @@
 //! parent directories are created automatically. Typically used to
 //! stage a release bundle for later `copy_files` / `db_migrate` steps.
 
-use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -11,7 +10,6 @@ use std::time::Duration;
 use tracing::info;
 
 pub struct Download {
-    id: String,
     url: String,
     dest: String,
 }
@@ -22,69 +20,61 @@ struct DownloadRaw {
     dest: String,
 }
 
-impl Step for Download {
-    fn from_config(cfg: &StepConfig) -> Result<Self> {
-        let raw: DownloadRaw = toml::Value::Table(cfg.extra.clone())
-            .try_into()
-            .with_context(|| format!("step '{}': invalid download config", cfg.id))?;
+impl Download {
+    pub fn from_body(body: toml::Value) -> Result<Self> {
+        let raw: DownloadRaw = body.try_into().context("invalid download config")?;
         Ok(Self {
-            id: cfg.id.clone(),
             url: raw.url,
             dest: raw.dest,
         })
     }
+}
 
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn kind(&self) -> &str {
-        "download"
-    }
-
-    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+impl Step for Download {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
+            let id = &ctx.step_id;
             let url = &self.url;
             let dest = Path::new(&self.dest);
 
-            info!("[{}] downloading {} to {}", self.id, url, dest.display());
+            info!("[{}] downloading {} to {}", id, url, dest.display());
 
             if let Some(parent) = dest.parent()
                 && !parent.as_os_str().is_empty()
             {
                 tokio::fs::create_dir_all(parent).await.with_context(|| {
-                    format!("step '{}': failed to create {}", self.id, parent.display())
+                    format!("step '{}': failed to create {}", id, parent.display())
                 })?;
             }
 
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(30))
                 .build()
-                .with_context(|| format!("step '{}': failed to build HTTP client", self.id))?;
+                .with_context(|| format!("step '{}': failed to build HTTP client", id))?;
 
             let resp = client
                 .get(url)
                 .send()
                 .await
-                .with_context(|| format!("step '{}': failed to GET {}", self.id, url))?;
+                .with_context(|| format!("step '{}': failed to GET {}", id, url))?;
 
             let status = resp.status();
             if !status.is_success() {
-                bail!("step '{}': HTTP {} for {}", self.id, status, url);
+                bail!("step '{}': HTTP {} for {}", id, status, url);
             }
 
             let bytes = resp
                 .bytes()
                 .await
-                .with_context(|| format!("step '{}': failed to read body of {}", self.id, url))?;
+                .with_context(|| format!("step '{}': failed to read body of {}", id, url))?;
 
             tokio::fs::write(dest, &bytes).await.with_context(|| {
-                format!("step '{}': failed to write {}", self.id, dest.display())
+                format!("step '{}': failed to write {}", id, dest.display())
             })?;
 
             info!(
                 "[{}] wrote {} bytes to {}",
-                self.id,
+                id,
                 bytes.len(),
                 dest.display()
             );

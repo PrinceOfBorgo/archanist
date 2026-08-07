@@ -6,7 +6,6 @@
 //! `exit_after` so the pipeline stops cleanly and the new container
 //! image can take over.
 
-use crate::config::StepConfig;
 use crate::docker::DockerClient;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
@@ -14,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 pub struct DockerSwap {
-    id: String,
     image: String,
     container: String,
     tag: String,
@@ -50,6 +48,19 @@ fn default_restart_policy() -> String {
 }
 
 impl DockerSwap {
+    pub fn from_body(body: toml::Value) -> Result<Self> {
+        let raw: DockerSwapRaw = body.try_into().context("invalid docker_swap config")?;
+        Ok(Self {
+            image: raw.image,
+            container: raw.container,
+            tag: raw.tag,
+            volumes: raw.volumes,
+            env: raw.env,
+            restart_policy: raw.restart_policy,
+            self_update: raw.self_update,
+        })
+    }
+
     fn full_image(image: &str, tag: &str) -> String {
         if image.contains(':') {
             image.to_string()
@@ -71,32 +82,9 @@ struct SwapPayload {
 }
 
 impl Step for DockerSwap {
-    fn from_config(cfg: &StepConfig) -> Result<Self> {
-        let raw: DockerSwapRaw = toml::Value::Table(cfg.extra.clone())
-            .try_into()
-            .with_context(|| format!("step '{}': invalid docker_swap config", cfg.id))?;
-        Ok(Self {
-            id: cfg.id.clone(),
-            image: raw.image,
-            container: raw.container,
-            tag: raw.tag,
-            volumes: raw.volumes,
-            env: raw.env,
-            restart_policy: raw.restart_policy,
-            self_update: raw.self_update,
-        })
-    }
-
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn kind(&self) -> &str {
-        "docker_swap"
-    }
-
     fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
+            let id = &ctx.step_id;
             let full_image = Self::full_image(&self.image, &self.tag);
             let docker = DockerClient::connect()?;
 
@@ -123,7 +111,7 @@ impl Step for DockerSwap {
                 restart_policy: self.restart_policy.clone(),
             };
             let payload_val = toml::Value::try_from(&payload)
-                .with_context(|| format!("step '{}': failed to serialize payload", self.id))?;
+                .with_context(|| format!("step '{}': failed to serialize payload", id))?;
 
             Ok(StepOutcome {
                 exit_after: self.self_update || ctx.is_self_update,
@@ -135,15 +123,16 @@ impl Step for DockerSwap {
 
     fn rollback<'a>(
         &'a self,
-        _ctx: &'a StepCtx,
+        ctx: &'a StepCtx,
         payload: &'a toml::Value,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            let id = &ctx.step_id;
             let pl: SwapPayload = payload.clone().try_into().unwrap_or_default();
             let Some(prev) = pl.previous_image else {
                 warn!(
                     "step '{}': no previous image recorded for {}, cannot rollback",
-                    self.id, pl.container
+                    id, pl.container
                 );
                 return Ok(());
             };

@@ -2,7 +2,6 @@
 //! from `src` to `dest`. Missing destination parents are created.
 //! Files at the destination are overwritten.
 
-use crate::config::StepConfig;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -10,7 +9,6 @@ use std::path::Path;
 use tracing::info;
 
 pub struct CopyFiles {
-    id: String,
     src: String,
     dest: String,
 }
@@ -21,34 +19,26 @@ struct CopyFilesRaw {
     dest: String,
 }
 
-impl Step for CopyFiles {
-    fn from_config(cfg: &StepConfig) -> Result<Self> {
-        let raw: CopyFilesRaw = toml::Value::Table(cfg.extra.clone())
-            .try_into()
-            .with_context(|| format!("step '{}': invalid copy_files config", cfg.id))?;
+impl CopyFiles {
+    pub fn from_body(body: toml::Value) -> Result<Self> {
+        let raw: CopyFilesRaw = body.try_into().context("invalid copy_files config")?;
         Ok(Self {
-            id: cfg.id.clone(),
             src: raw.src,
             dest: raw.dest,
         })
     }
+}
 
-    fn id(&self) -> &str {
-        &self.id
-    }
-
-    fn kind(&self) -> &str {
-        "copy_files"
-    }
-
-    fn apply<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
+impl Step for CopyFiles {
+    fn apply<'a>(&'a self, ctx: &'a StepCtx) -> BoxFuture<'a, Result<StepOutcome>> {
         Box::pin(async move {
+            let id = &ctx.step_id;
             let src = Path::new(&self.src);
             let dest = Path::new(&self.dest);
 
             info!(
                 "[{}] copying {} to {}",
-                self.id,
+                id,
                 src.display(),
                 dest.display()
             );
@@ -56,7 +46,7 @@ impl Step for CopyFiles {
             let meta = tokio::fs::metadata(src).await.with_context(|| {
                 format!(
                     "step '{}': source not accessible: {}",
-                    self.id,
+                    id,
                     src.display()
                 )
             })?;
@@ -65,7 +55,7 @@ impl Step for CopyFiles {
                 copy_dir_recursive(src, dest).await.with_context(|| {
                     format!(
                         "step '{}': failed to copy directory {} to {}",
-                        self.id,
+                        id,
                         src.display(),
                         dest.display()
                     )
@@ -75,13 +65,13 @@ impl Step for CopyFiles {
                     && !parent.as_os_str().is_empty()
                 {
                     tokio::fs::create_dir_all(parent).await.with_context(|| {
-                        format!("step '{}': failed to create {}", self.id, parent.display())
+                        format!("step '{}': failed to create {}", id, parent.display())
                     })?;
                 }
                 tokio::fs::copy(src, dest).await.with_context(|| {
                     format!(
                         "step '{}': failed to copy {} to {}",
-                        self.id,
+                        id,
                         src.display(),
                         dest.display()
                     )
@@ -89,7 +79,7 @@ impl Step for CopyFiles {
             } else {
                 bail!(
                     "step '{}': source {} is neither a file nor a directory",
-                    self.id,
+                    id,
                     src.display()
                 );
             }

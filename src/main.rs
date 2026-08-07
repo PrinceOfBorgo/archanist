@@ -155,13 +155,22 @@ async fn run_async(cli: Cli) -> Result<()> {
         Commands::Rollback { component } => {
             let state_path = cfg.state_path();
             let mut state = state::ArchanistState::load(&state_path)?;
-            run_rollback(&cfg, &mut state, component).await?;
+            let registry = std::sync::Arc::new(steps::builtin_registry());
+            run_rollback(&cfg, &mut state, component, &registry).await?;
             state.save(&state_path)?;
         }
         Commands::Update { component } => {
             let state_path = cfg.state_path();
             let mut state = state::ArchanistState::load(&state_path)?;
-            let result = run_update(&cfg, &mut state, component.as_deref(), &state_path).await;
+            let registry = std::sync::Arc::new(steps::builtin_registry());
+            let result = run_update(
+                &cfg,
+                &mut state,
+                component.as_deref(),
+                &state_path,
+                &registry,
+            )
+            .await;
             state.save(&state_path)?;
             result?;
         }
@@ -172,7 +181,8 @@ async fn run_async(cli: Cli) -> Result<()> {
             state.save(&state_path)?;
         }
         Commands::StepKinds => {
-            for kind in steps::KINDS {
+            let registry = steps::builtin_registry();
+            for kind in registry.kinds() {
                 println!("{kind}");
             }
         }
@@ -372,6 +382,7 @@ async fn run_rollback(
     cfg: &config::ArchanistConfig,
     state: &mut state::ArchanistState,
     component: &str,
+    registry: &std::sync::Arc<steps::StepRegistry>,
 ) -> Result<()> {
     let comp = cfg.components.get(component).with_context(|| {
         format!(
@@ -398,22 +409,23 @@ async fn run_rollback(
     // Rollback consults each step's payload snapshot rather than its
     // configured template, so we build steps from raw (un-interpolated)
     // config and never spin up a pipeline runner here
-    let ctx = steps::StepCtx {
-        is_self_update,
-    };
     for step_cfg in comp.steps.iter().rev() {
         if let Some(applied) = entry.applied_steps.get(&step_cfg.id).cloned() {
-            let step = steps::build_step(step_cfg)
+            let step = registry
+                .build_raw(step_cfg)
                 .with_context(|| format!("failed to build step '{}'", step_cfg.id))?;
+            let ctx = steps::StepCtx {
+                step_id: step_cfg.id.clone(),
+                is_self_update,
+            };
             println!(
                 "rolling back step '{}' (applied at {})",
-                step.id(),
-                applied.applied_at
+                step_cfg.id, applied.applied_at
             );
             step.rollback(&ctx, &applied.payload)
                 .await
-                .with_context(|| format!("rollback of step '{}' failed", step.id()))?;
-            entry.applied_steps.remove(step.id());
+                .with_context(|| format!("rollback of step '{}' failed", step_cfg.id))?;
+            entry.applied_steps.remove(&step_cfg.id);
         }
     }
     Ok(())
@@ -424,6 +436,7 @@ async fn run_update(
     state: &mut state::ArchanistState,
     filter: Option<&str>,
     state_path: &Path,
+    registry: &std::sync::Arc<steps::StepRegistry>,
 ) -> Result<()> {
     let names: Vec<String> = if let Some(name) = filter {
         if !cfg.components.contains_key(name) {
@@ -487,7 +500,7 @@ async fn run_update(
         println!("updating {} -> {}", current, latest);
 
         let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
-        let pipeline = pipeline::Pipeline::build(name, comp, is_self_update);
+        let pipeline = pipeline::Pipeline::build(name, comp, is_self_update, registry.clone());
         let component_name = name.clone();
 
         // Seed the pipeline env with built-in vars and per-component `[vars]`
@@ -498,9 +511,9 @@ async fn run_update(
         let initial_env = interp::expand_component_vars(&base_env, &comp.vars);
 
         let result = pipeline
-            .run(initial_env, |step, outcome| {
+            .run(initial_env, |step_cfg, outcome| {
                 let applied = state::AppliedStep {
-                    kind: step.kind().to_string(),
+                    kind: step_cfg.kind.clone(),
                     applied_at: Utc::now(),
                     payload: outcome.payload.clone(),
                 };
@@ -509,7 +522,7 @@ async fn run_update(
                     .entry(component_name.clone())
                     .or_default()
                     .applied_steps
-                    .insert(step.id().to_string(), applied);
+                    .insert(step_cfg.id.clone(), applied);
                 state.save(state_path)
             })
             .await;
