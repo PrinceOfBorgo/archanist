@@ -4,9 +4,10 @@
 //! Each step's body is interpolated against the current env immediately
 //! before the step is built (via [`StepRegistry::build`]), so vars
 //! exported by earlier steps (via [`StepOutcome::exported_vars`]) are
-//! visible to later ones. State is persisted per-step through the
-//! `on_step_complete` callback so a failed run can be resumed or
-//! rolled back.
+//! visible to later ones. Step lifecycle events are surfaced through
+//! the caller-supplied `on_step_event` callback so the outer command
+//! can update the persisted [`crate::state::UpdateAttempt`] as the run
+//! progresses.
 
 use crate::config::{ComponentConfig, StepConfig};
 use crate::interp::Env;
@@ -20,6 +21,19 @@ pub struct Pipeline {
     is_self_update: bool,
     step_configs: Vec<StepConfig>,
     registry: Arc<StepRegistry>,
+}
+
+/// Lifecycle events surfaced to the [`Pipeline::run`] callback.
+///
+/// The pipeline never fires [`StepEvent::Completed`] for a failed step;
+/// failure propagates out of `run` and the caller reconstructs which
+/// step was in flight from its own [`crate::state::UpdateAttempt`]
+/// records.
+pub enum StepEvent<'a> {
+    /// About to invoke `apply` for this step.
+    Started,
+    /// `apply` returned successfully with this outcome.
+    Completed(&'a StepOutcome),
 }
 
 impl Pipeline {
@@ -47,12 +61,14 @@ impl Pipeline {
     /// Run the pipeline starting from `initial_env`. Each step's body is
     /// interpolated against the current environment right before build,
     /// so later steps see variables exported by earlier ones.
-    /// `on_step_complete` receives the completed step's config and its
-    /// outcome, allowing callers to persist state (per-step
-    /// `applied_steps` for rollback) as the pipeline progresses.
-    pub async fn run<F>(&self, initial_env: Env, mut on_step_complete: F) -> Result<()>
+    ///
+    /// `on_step_event` is invoked at [`StepEvent::Started`] and, on
+    /// success, [`StepEvent::Completed`]. It is not called for a step
+    /// whose `apply` errors - that error bubbles out of `run` and the
+    /// caller uses its own state to identify the failing step.
+    pub async fn run<F>(&self, initial_env: Env, mut on_step_event: F) -> Result<()>
     where
-        F: FnMut(&StepConfig, &StepOutcome) -> Result<()>,
+        F: FnMut(&StepConfig, StepEvent<'_>) -> Result<()>,
     {
         let total = self.step_configs.len();
         info!(
@@ -73,13 +89,15 @@ impl Pipeline {
                 step_id: step_cfg.id.clone(),
                 is_self_update: self.is_self_update,
             };
+            on_step_event(step_cfg, StepEvent::Started).with_context(|| {
+                format!("failed to persist state before step '{}'", step_cfg.id)
+            })?;
             let outcome = step
                 .apply(&ctx)
                 .await
                 .with_context(|| format!("step '{}' failed", step_cfg.id))?;
-            on_step_complete(step_cfg, &outcome).with_context(|| {
-                format!("failed to persist state after step '{}'", step_cfg.id)
-            })?;
+            on_step_event(step_cfg, StepEvent::Completed(&outcome))
+                .with_context(|| format!("failed to persist state after step '{}'", step_cfg.id))?;
             for (k, v) in &outcome.exported_vars {
                 env.insert(k.clone(), v.clone());
             }

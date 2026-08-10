@@ -396,9 +396,23 @@ async fn run_rollback(
         return Ok(());
     };
 
-    if entry.applied_steps.is_empty() {
+    let Some(attempt) = entry.last_attempt.as_mut() else {
         println!(
-            "{}: no applied steps recorded, nothing to roll back",
+            "{}: no recorded update attempt, nothing to roll back",
+            component
+        );
+        return Ok(());
+    };
+
+    let done_ids: std::collections::HashSet<String> = attempt
+        .steps
+        .iter()
+        .filter(|s| s.state == state::StepRunState::Done)
+        .map(|s| s.id.clone())
+        .collect();
+    if done_ids.is_empty() {
+        println!(
+            "{}: no completed steps in last attempt, nothing to roll back",
             component
         );
         return Ok(());
@@ -408,24 +422,36 @@ async fn run_rollback(
 
     // Rollback consults each step's payload snapshot rather than its
     // configured template, so we build steps from raw (un-interpolated)
-    // config and never spin up a pipeline runner here
+    // config and never spin up a pipeline runner here.
     for step_cfg in comp.steps.iter().rev() {
-        if let Some(applied) = entry.applied_steps.get(&step_cfg.id).cloned() {
-            let step = registry
-                .build_raw(step_cfg)
-                .with_context(|| format!("failed to build step '{}'", step_cfg.id))?;
-            let ctx = steps::StepCtx {
-                step_id: step_cfg.id.clone(),
-                is_self_update,
-            };
-            println!(
-                "rolling back step '{}' (applied at {})",
-                step_cfg.id, applied.applied_at
-            );
-            step.rollback(&ctx, &applied.payload)
-                .await
-                .with_context(|| format!("rollback of step '{}' failed", step_cfg.id))?;
-            entry.applied_steps.remove(&step_cfg.id);
+        if !done_ids.contains(&step_cfg.id) {
+            continue;
+        }
+        // Find the matching StepRun so we can read its payload.
+        let Some(run) = attempt.steps.iter().find(|s| s.id == step_cfg.id) else {
+            continue;
+        };
+        let payload = run.payload.clone();
+        let finished_at = run.finished_at;
+
+        let step = registry
+            .build_raw(step_cfg)
+            .with_context(|| format!("failed to build step '{}'", step_cfg.id))?;
+        let ctx = steps::StepCtx {
+            step_id: step_cfg.id.clone(),
+            is_self_update,
+        };
+        match finished_at {
+            Some(t) => println!("rolling back step '{}' (applied at {})", step_cfg.id, t),
+            None => println!("rolling back step '{}'", step_cfg.id),
+        }
+        step.rollback(&ctx, &payload)
+            .await
+            .with_context(|| format!("rollback of step '{}' failed", step_cfg.id))?;
+        // Flip the slot to Failed so a re-run picks it up cleanly.
+        if let Some(slot) = attempt.steps.iter_mut().find(|s| s.id == step_cfg.id) {
+            slot.state = state::StepRunState::Failed;
+            slot.message = Some("rolled back".into());
         }
     }
     Ok(())
@@ -510,19 +536,31 @@ async fn run_update(
         base_env.insert("component".into(), name.clone());
         let initial_env = interp::expand_component_vars(&base_env, &comp.vars);
 
+        // Seed an in-flight attempt with one Pending slot per configured step.
+        {
+            let entry = state.components.entry(name.clone()).or_default();
+            let starting_current = entry.current_version.clone();
+            entry.last_attempt = Some(state::UpdateAttempt::start(
+                latest.clone(),
+                starting_current,
+                comp.steps.iter().map(|s| (s.id.clone(), s.kind.clone())),
+            ));
+            state.save(state_path)?;
+        }
+
         let result = pipeline
-            .run(initial_env, |step_cfg, outcome| {
-                let applied = state::AppliedStep {
-                    kind: step_cfg.kind.clone(),
-                    applied_at: Utc::now(),
-                    payload: outcome.payload.clone(),
-                };
-                state
-                    .components
-                    .entry(component_name.clone())
-                    .or_default()
-                    .applied_steps
-                    .insert(step_cfg.id.clone(), applied);
+            .run(initial_env, |step_cfg, event| {
+                let entry = state.components.entry(component_name.clone()).or_default();
+                if let Some(a) = entry.last_attempt.as_mut() {
+                    match event {
+                        pipeline::StepEvent::Started => {
+                            a.mark_step_running(&step_cfg.id);
+                        }
+                        pipeline::StepEvent::Completed(outcome) => {
+                            a.mark_step_done(&step_cfg.id, outcome.payload.clone());
+                        }
+                    }
+                }
                 state.save(state_path)
             })
             .await;
@@ -530,6 +568,9 @@ async fn run_update(
         match result {
             Ok(()) => {
                 let entry = state.components.entry(name.clone()).or_default();
+                if let Some(a) = entry.last_attempt.as_mut() {
+                    a.mark_success();
+                }
                 entry.previous_version = entry.current_version.take();
                 entry.current_version = Some(latest.clone());
                 println!("{}: updated to {}", name, latest);
@@ -537,6 +578,25 @@ async fn run_update(
             Err(e) => {
                 println!("{}: update failed: {:#}", name, e);
                 let entry = state.components.entry(name.clone()).or_default();
+                // Find the step that was running when the pipeline failed
+                // (if any) and record the error against it.
+                if let Some(a) = entry.last_attempt.as_mut() {
+                    let running_id = a
+                        .steps
+                        .iter()
+                        .find(|s| s.state == state::StepRunState::Running)
+                        .map(|s| s.id.clone());
+                    if let Some(id) = running_id {
+                        a.mark_step_failed(&id, format!("{:#}", e));
+                    } else {
+                        // No step in-flight - record failure on the attempt
+                        // itself without touching a specific step.
+                        a.finished_at = Some(Utc::now());
+                        a.outcome = state::AttemptOutcome::Failed {
+                            message: format!("{:#}", e),
+                        };
+                    }
+                }
                 if !entry.blocklist.iter().any(|v| v == &latest) {
                     entry.blocklist.push(latest.clone());
                 }
