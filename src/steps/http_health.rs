@@ -101,4 +101,24 @@ impl Step for HttpHealth {
             }
         })
     }
+
+    fn is_satisfied<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            // Single quick probe: if the endpoint already returns the
+            // expected status we consider the step satisfied. Any
+            // network or status mismatch means "would run".
+            let client = match reqwest::Client::builder()
+                .user_agent(concat!("archanist/", env!("CARGO_PKG_VERSION")))
+                .timeout(Duration::from_secs(3))
+                .build()
+            {
+                Ok(c) => c,
+                Err(_) => return Ok(false),
+            };
+            match client.get(&self.url).send().await {
+                Ok(resp) => Ok(resp.status().as_u16() == self.expected_status),
+                Err(_) => Ok(false),
+            }
+        })
+    }
 }

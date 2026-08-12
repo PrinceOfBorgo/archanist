@@ -149,7 +149,8 @@ async fn run_async(cli: Cli) -> Result<()> {
         Commands::Check { component } => {
             let state_path = cfg.state_path();
             let mut state = state::ArchanistState::load(&state_path)?;
-            run_check(&cfg, &mut state, component.as_deref()).await?;
+            let registry = std::sync::Arc::new(steps::builtin_registry());
+            run_check(&cfg, &mut state, component.as_deref(), &registry).await?;
             state.save(&state_path)?;
         }
         Commands::Rollback { component } => {
@@ -326,6 +327,7 @@ async fn run_check(
     cfg: &config::ArchanistConfig,
     state: &mut state::ArchanistState,
     filter: Option<&str>,
+    registry: &std::sync::Arc<steps::StepRegistry>,
 ) -> Result<()> {
     let names: Vec<String> = if let Some(name) = filter {
         if !cfg.components.contains_key(name) {
@@ -366,6 +368,45 @@ async fn run_check(
                     ""
                 };
                 println!("current={}, latest={}{}", current, latest, marker);
+
+                // Probe each configured step to report which ones would
+                // actually do work if `update` were run right now. This
+                // uses the same env `run_update` would seed with, so
+                // step bodies interpolate against the target version.
+                if !comp.steps.is_empty() {
+                    let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
+                    let mut base_env = interp::Env::new();
+                    base_env.insert("version".into(), latest.clone());
+                    base_env.insert("current_version".into(), current.clone());
+                    base_env.insert("component".into(), name.clone());
+                    let env = interp::expand_component_vars(&base_env, &comp.vars);
+
+                    let total = comp.steps.len();
+                    let mut satisfied = 0usize;
+                    for step_cfg in &comp.steps {
+                        // A step that fails to build (or whose probe
+                        // errors) can't be "satisfied" - count it as
+                        // work the update would do.
+                        let ok = match registry.build(step_cfg, &env) {
+                            Ok(step) => {
+                                let ctx = steps::StepCtx {
+                                    step_id: step_cfg.id.clone(),
+                                    is_self_update,
+                                };
+                                step.is_satisfied(&ctx).await.unwrap_or(false)
+                            }
+                            Err(_) => false,
+                        };
+                        if ok {
+                            satisfied += 1;
+                        }
+                    }
+                    let would_run = total - satisfied;
+                    println!(
+                        "  {} of {} step(s) already satisfied, {} would run",
+                        satisfied, total, would_run
+                    );
+                }
             }
             Ok(None) => {
                 println!("no stable release available");

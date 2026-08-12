@@ -83,6 +83,16 @@ pub trait Step: Send + Sync {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { Ok(()) })
     }
+
+    /// Read-only probe: is the target state that this step would produce
+    /// already in place? Consumed by `archanist check` to report which
+    /// steps would actually do work if the update were run right now.
+    ///
+    /// The default assumes "no" - safer to over-report work than to
+    /// silently skip a step that isn't actually idempotent.
+    fn is_satisfied<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move { Ok(false) })
+    }
 }
 
 /// A factory that turns an already-interpolated step body into a boxed

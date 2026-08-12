@@ -152,6 +152,22 @@ impl Step for DockerSwap {
             Ok(())
         })
     }
+
+    fn is_satisfied<'a>(&'a self, _ctx: &'a StepCtx) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            // The step is already satisfied when the target container is
+            // running the same image we would deploy.
+            let docker = match DockerClient::connect() {
+                Ok(d) => d,
+                // No reachable daemon: treat as "not satisfied" so the
+                // caller reports "would run" instead of leaking the error.
+                Err(_) => return Ok(false),
+            };
+            let want = Self::full_image(&self.image, &self.tag);
+            let current = docker.container_image(&self.container).await.ok().flatten();
+            Ok(current.as_deref() == Some(want.as_str()))
+        })
+    }
 }
 
 #[cfg(test)]
