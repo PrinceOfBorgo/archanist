@@ -19,6 +19,7 @@ use crate::interp::{self, Env};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -27,12 +28,20 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Execution context handed to every step.
 ///
 /// Since the step's own id and kind live in [`StepConfig`] (not on the
-/// step itself), the pipeline threads the id through here so `apply` /
-/// `rollback` implementations can include it in error messages.
+/// step itself), the pipeline threads them through here so `apply` /
+/// `rollback` implementations can include them in error messages and
+/// use them to locate per-step state on disk.
 pub struct StepCtx {
     /// The step's `id` from its [`StepConfig`]. Used in log lines and
     /// error contexts.
     pub step_id: String,
+    /// Name of the component this step belongs to. Used by steps that
+    /// persist per-component state (`db_migrate`'s applied-stems log).
+    pub component: String,
+    /// Base directory for resolving relative paths and persisting per-step
+    /// state (e.g. `<base_dir>/.archanist-migrations/<component>/<step_id>.toml`).
+    /// Comes from [`crate::config::ArchanistConfig::base_dir`].
+    pub base_dir: PathBuf,
     /// True when the pipeline is updating the archanist itself. Consumed by
     /// `docker_swap` to force `exit_after` even when the step's own `self`
     /// field is unset (declarative sugar for "this component is me").
@@ -177,7 +186,7 @@ pub fn builtin_registry() -> StepRegistry {
         Ok(Box::new(parse_text::ParseText::from_body(b)?))
     });
     r.register("db_migrate", |b| {
-        Ok(Box::new(db_migrate::DbMigrate::from_body(b)?))
+        Ok(Box::new(db_migrate::DbMigrateStep::from_body(b)?))
     });
     r.register("docker_swap", |b| {
         Ok(Box::new(docker_swap::DockerSwap::from_body(b)?))

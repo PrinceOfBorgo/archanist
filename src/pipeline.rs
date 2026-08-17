@@ -13,12 +13,14 @@ use crate::config::{ComponentConfig, StepConfig};
 use crate::interp::Env;
 use crate::steps::{StepCtx, StepOutcome, StepRegistry};
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, info};
 
 pub struct Pipeline {
     component_name: String,
     is_self_update: bool,
+    base_dir: PathBuf,
     step_configs: Vec<StepConfig>,
     registry: Arc<StepRegistry>,
 }
@@ -41,6 +43,7 @@ impl Pipeline {
         name: &str,
         cfg: &ComponentConfig,
         is_self_update: bool,
+        base_dir: PathBuf,
         registry: Arc<StepRegistry>,
     ) -> Self {
         let step_configs = cfg.steps.clone();
@@ -53,6 +56,7 @@ impl Pipeline {
         Self {
             component_name: name.to_string(),
             is_self_update,
+            base_dir,
             step_configs,
             registry,
         }
@@ -87,6 +91,8 @@ impl Pipeline {
             let step = self.registry.build(step_cfg, &env)?;
             let ctx = StepCtx {
                 step_id: step_cfg.id.clone(),
+                component: self.component_name.clone(),
+                base_dir: self.base_dir.clone(),
                 is_self_update: self.is_self_update,
             };
             on_step_event(step_cfg, StepEvent::Started).with_context(|| {

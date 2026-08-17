@@ -391,6 +391,8 @@ async fn run_check(
                             Ok(step) => {
                                 let ctx = steps::StepCtx {
                                     step_id: step_cfg.id.clone(),
+                                    component: name.clone(),
+                                    base_dir: cfg.base_dir.clone(),
                                     is_self_update,
                                 };
                                 step.is_satisfied(&ctx).await.unwrap_or(false)
@@ -480,6 +482,8 @@ async fn run_rollback(
             .with_context(|| format!("failed to build step '{}'", step_cfg.id))?;
         let ctx = steps::StepCtx {
             step_id: step_cfg.id.clone(),
+            component: component.to_string(),
+            base_dir: cfg.base_dir.clone(),
             is_self_update,
         };
         match finished_at {
@@ -567,7 +571,13 @@ async fn run_update(
         println!("updating {} -> {}", current, latest);
 
         let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
-        let pipeline = pipeline::Pipeline::build(name, comp, is_self_update, registry.clone());
+        let pipeline = pipeline::Pipeline::build(
+            name,
+            comp,
+            is_self_update,
+            cfg.base_dir.clone(),
+            registry.clone(),
+        );
         let component_name = name.clone();
 
         // Seed the pipeline env with built-in vars and per-component `[vars]`
