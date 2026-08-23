@@ -183,7 +183,7 @@ pub fn builtin_registry() -> StepRegistry {
         Ok(Box::new(config_merge::ConfigMerge::from_body(b)?))
     });
     r.register("parse_text", |b| {
-        Ok(Box::new(parse_text::ParseText::from_body(b)?))
+        Ok(Box::new(parse_text::ParseTextStep::from_body(b)?))
     });
     r.register("db_migrate", |b| {
         Ok(Box::new(db_migrate::DbMigrateStep::from_body(b)?))
