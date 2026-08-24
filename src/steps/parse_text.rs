@@ -41,6 +41,7 @@ use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
@@ -84,36 +85,32 @@ pub struct Section {
     pub end: Option<String>,
 }
 
-/// One extraction rule: pattern, target var, and post-processing.
+/// One extraction rule. The pattern must declare one or more named
+/// capture groups (`(?<name>...)`); each becomes an exported variable.
 #[derive(Debug, Deserialize)]
 pub struct Extract {
     /// Regex applied with `captures_iter` to the (possibly stripped and
-    /// sectioned) text.
+    /// sectioned) text. Must contain at least one named capture group.
     pub pattern: String,
-    /// Capture group to collect from each match. Default `1`. Use `0`
-    /// for the whole match.
-    #[serde(default = "default_group")]
-    pub group: usize,
-    /// Variable name under which the result is published. Include the
-    /// `vars.` prefix to be reachable via `${vars.X}` in later steps.
-    pub into: String,
-    /// Remove duplicates from the collected list before joining.
+    /// Optional prefix prepended to every exported variable name. For
+    /// example, `prefix = "vars."` with a named group `migrations`
+    /// publishes `vars.migrations`, reachable via `${vars.migrations}`
+    /// in later steps.
+    #[serde(default)]
+    pub prefix: String,
+    /// Remove duplicates per exported variable before joining.
     #[serde(default)]
     pub dedupe: bool,
-    /// Lexicographically sort the collected list before joining.
+    /// Lexicographically sort per exported variable before joining.
     #[serde(default)]
     pub sort: bool,
     /// Separator placed between collected items. Default newline.
     #[serde(default = "default_join")]
     pub join: String,
     /// If the pattern produces zero matches, fail the step instead of
-    /// publishing an empty string.
+    /// publishing empty strings.
     #[serde(default)]
     pub required: bool,
-}
-
-fn default_group() -> usize {
-    1
 }
 
 fn default_join() -> String {
@@ -174,30 +171,65 @@ fn apply_strip(text: &str, patterns: &[String]) -> Result<String> {
     Ok(out)
 }
 
-fn run_extract(text: &str, rule: &Extract) -> Result<String> {
+fn run_extract(text: &str, rule: &Extract) -> Result<Vec<(String, String)>> {
     let re = Regex::new(&rule.pattern)
         .with_context(|| format!("invalid extract.pattern regex: {}", rule.pattern))?;
-    let mut items: Vec<String> = Vec::new();
-    for caps in re.captures_iter(text) {
-        if let Some(m) = caps.get(rule.group) {
-            items.push(m.as_str().to_string());
-        }
-    }
-    if items.is_empty() && rule.required {
+
+    // Discover the named groups the pattern declares, in declaration order,
+    // skipping the implicit whole-match group at index 0 and any unnamed
+    // sub-groups the user included.
+    let names: Vec<String> = re
+        .capture_names()
+        .flatten()
+        .map(|s| s.to_string())
+        .collect();
+    if names.is_empty() {
         bail!(
-            "extract '{}' produced zero matches (pattern: {})",
-            rule.into,
+            "extract pattern must contain at least one named capture group `(?<name>...)`: {}",
             rule.pattern
         );
     }
-    if rule.dedupe {
-        let mut seen = std::collections::HashSet::new();
-        items.retain(|s| seen.insert(s.clone()));
+
+    // Collect the per-name value list across every match.
+    let mut lists: HashMap<String, Vec<String>> =
+        names.iter().map(|n| (n.clone(), Vec::new())).collect();
+    for caps in re.captures_iter(text) {
+        for name in &names {
+            if let Some(m) = caps.name(name) {
+                lists.get_mut(name).unwrap().push(m.as_str().to_string());
+            }
+        }
     }
-    if rule.sort {
-        items.sort();
+
+    if rule.required && lists.values().any(|v| v.is_empty()) {
+        let empty: Vec<&str> = names
+            .iter()
+            .filter(|n| lists.get(*n).map(|v| v.is_empty()).unwrap_or(true))
+            .map(String::as_str)
+            .collect();
+        bail!(
+            "extract produced zero matches for named group(s) {:?} (pattern: {})",
+            empty,
+            rule.pattern
+        );
     }
-    Ok(items.join(&rule.join))
+
+    // Post-process each group independently, then publish under
+    // `<prefix><group_name>`.
+    let mut out: Vec<(String, String)> = Vec::with_capacity(names.len());
+    for name in &names {
+        let mut items = lists.remove(name).unwrap_or_default();
+        if rule.dedupe {
+            let mut seen = std::collections::HashSet::new();
+            items.retain(|s| seen.insert(s.clone()));
+        }
+        if rule.sort {
+            items.sort();
+        }
+        let value = items.join(&rule.join);
+        out.push((format!("{}{}", rule.prefix, name), value));
+    }
+    Ok(out)
 }
 
 impl Step for ParseTextStep {
@@ -224,16 +256,22 @@ impl Step for ParseTextStep {
 
             let mut exported = Env::new();
             for rule in &self.extract {
-                let value = run_extract(&cleaned, rule)
-                    .with_context(|| format!("step '{}': extract '{}' failed", id, rule.into))?;
-                let count = if value.is_empty() {
-                    0
-                } else {
-                    value.split(&rule.join).filter(|s| !s.is_empty()).count()
-                };
-                debug!("[{}] exported {} = {:?}", id, rule.into, value);
-                info!("[{}] exported `{}` = {} item(s)", id, rule.into, count);
-                exported.insert(rule.into.clone(), value);
+                let outputs = run_extract(&cleaned, rule).with_context(|| {
+                    format!(
+                        "step '{}': extract for pattern '{}' failed",
+                        id, rule.pattern
+                    )
+                })?;
+                for (name, value) in outputs {
+                    let count = if value.is_empty() {
+                        0
+                    } else {
+                        value.split(&rule.join).filter(|s| !s.is_empty()).count()
+                    };
+                    debug!("[{}] exported {} = {:?}", id, name, value);
+                    info!("[{}] exported `{}` = {} item(s)", id, name, count);
+                    exported.insert(name, value);
+                }
             }
 
             Ok(StepOutcome {
@@ -288,31 +326,30 @@ Should be excluded.
             section = { start = "^A", end = "^B" }
 
             [[extract]]
-            pattern = "`([^`]+)`"
-            into    = "vars.items"
+            pattern = "`(?<items>[^`]+)`"
+            prefix  = "vars."
             dedupe  = true
             sort    = true
             "#,
         ))
         .unwrap();
         assert_eq!(step.extract.len(), 1);
-        assert_eq!(step.extract[0].into, "vars.items");
+        assert_eq!(step.extract[0].prefix, "vars.");
         assert!(step.extract[0].dedupe);
         assert!(step.extract[0].sort);
     }
 
     #[test]
-    fn extract_defaults_group_to_1_and_join_to_newline() {
+    fn extract_defaults_prefix_to_empty_and_join_to_newline() {
         let step = ParseTextStep::from_body(body(
             r#"
             file = "/tmp/x"
             [[extract]]
-            pattern = "x"
-            into    = "vars.x"
+            pattern = "(?<x>x)"
             "#,
         ))
         .unwrap();
-        assert_eq!(step.extract[0].group, 1);
+        assert_eq!(step.extract[0].prefix, "");
         assert_eq!(step.extract[0].join, "\n");
     }
 
@@ -383,14 +420,31 @@ Should be excluded.
         assert_eq!(out, "hi  ok `keep`");
     }
 
+    fn extract_rule(pattern: &str, prefix: &str) -> Extract {
+        Extract {
+            pattern: pattern.into(),
+            prefix: prefix.into(),
+            dedupe: false,
+            sort: false,
+            join: ",".into(),
+            required: false,
+        }
+    }
+
     #[test]
-    fn extract_collects_capture_group_1_by_default() {
+    fn extract_rejects_pattern_without_named_groups() {
+        let err =
+            run_extract("one two three", &extract_rule("(\\w+)", "")).expect_err("expected error");
+        assert!(err.to_string().contains("named capture"), "err: {err}");
+    }
+
+    #[test]
+    fn extract_collects_named_group_across_matches() {
         let out = run_extract(
             "one=1\ntwo=2\nthree=3\n",
             &Extract {
-                pattern: "^(\\w+)=".into(),
-                group: 1,
-                into: "vars.keys".into(),
+                pattern: "(?m)^(?<key>\\w+)=(?<val>\\S+)$".into(),
+                prefix: "vars.".into(),
                 dedupe: false,
                 sort: false,
                 join: ",".into(),
@@ -398,18 +452,22 @@ Should be excluded.
             },
         )
         .unwrap();
-        // Non-multiline default: pattern only matches the first line.
-        assert_eq!(out, "one");
+        // Two named groups, each collected across all three matches.
+        let map: std::collections::HashMap<_, _> = out.into_iter().collect();
+        assert_eq!(
+            map.get("vars.key").map(String::as_str),
+            Some("one,two,three")
+        );
+        assert_eq!(map.get("vars.val").map(String::as_str), Some("1,2,3"));
     }
 
     #[test]
-    fn extract_dedupe_and_sort() {
+    fn extract_dedupe_and_sort_apply_per_group() {
         let out = run_extract(
             "a b a c b",
             &Extract {
-                pattern: "([abc])".into(),
-                group: 1,
-                into: "vars.letters".into(),
+                pattern: "(?<letter>[abc])".into(),
+                prefix: "vars.".into(),
                 dedupe: true,
                 sort: true,
                 join: ",".into(),
@@ -417,7 +475,8 @@ Should be excluded.
             },
         )
         .unwrap();
-        assert_eq!(out, "a,b,c");
+        let map: std::collections::HashMap<_, _> = out.into_iter().collect();
+        assert_eq!(map.get("vars.letter").map(String::as_str), Some("a,b,c"));
     }
 
     #[test]
@@ -425,9 +484,8 @@ Should be excluded.
         let err = run_extract(
             "no digits here",
             &Extract {
-                pattern: "(\\d+)".into(),
-                group: 1,
-                into: "vars.n".into(),
+                pattern: "(?<n>\\d+)".into(),
+                prefix: "vars.".into(),
                 dedupe: false,
                 sort: false,
                 join: ",".into(),
@@ -439,21 +497,23 @@ Should be excluded.
     }
 
     #[test]
-    fn extract_group_0_returns_whole_match() {
+    fn extract_without_prefix_publishes_bare_group_name() {
         let out = run_extract(
-            "abc123def",
+            "v1.2.3",
             &Extract {
-                pattern: "\\d+".into(),
-                group: 0,
-                into: "vars.n".into(),
+                pattern: "^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$".into(),
+                prefix: "".into(),
                 dedupe: false,
                 sort: false,
                 join: ",".into(),
-                required: false,
+                required: true,
             },
         )
         .unwrap();
-        assert_eq!(out, "123");
+        let map: std::collections::HashMap<_, _> = out.into_iter().collect();
+        assert_eq!(map.get("major").map(String::as_str), Some("1"));
+        assert_eq!(map.get("minor").map(String::as_str), Some("2"));
+        assert_eq!(map.get("patch").map(String::as_str), Some("3"));
     }
 
     #[test]
@@ -471,9 +531,8 @@ Should be excluded.
         let out = run_extract(
             &cleaned,
             &Extract {
-                pattern: "`([^`]+\\.sql)`".into(),
-                group: 1,
-                into: "vars.migrations".into(),
+                pattern: "`(?<migrations>[^`]+\\.sql)`".into(),
+                prefix: "vars.".into(),
                 dedupe: true,
                 sort: true,
                 join: "\n".into(),
@@ -481,7 +540,8 @@ Should be excluded.
             },
         )
         .unwrap();
-        let lines: Vec<&str> = out.split('\n').collect();
+        let map: std::collections::HashMap<_, _> = out.into_iter().collect();
+        let lines: Vec<&str> = map.get("vars.migrations").unwrap().split('\n').collect();
         assert_eq!(
             lines,
             vec![
