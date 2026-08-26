@@ -93,6 +93,15 @@ pub trait Step: Send + Sync {
         Box::pin(async move { Ok(()) })
     }
 
+    /// Whether [`Self::rollback`] does anything meaningful. Steps that
+    /// keep the default no-op `rollback` return `false` (the default);
+    /// steps with a real rollback (`docker_swap`, `db_migrate` with a
+    /// `rollback_command`) override this to `true`. Consumed by
+    /// `archanist rollback` to label its progress lines.
+    fn has_rollback(&self) -> bool {
+        false
+    }
+
     /// Read-only probe: is the target state that this step would produce
     /// already in place? Consumed by `archanist check` to report which
     /// steps would actually do work if the update were run right now.

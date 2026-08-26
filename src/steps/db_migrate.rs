@@ -288,6 +288,10 @@ impl Step for DbMigrateStep {
             Ok(())
         })
     }
+
+    fn has_rollback(&self) -> bool {
+        self.rollback_command.is_some()
+    }
 }
 
 #[cfg(test)]

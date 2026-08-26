@@ -168,6 +168,10 @@ impl Step for DockerSwap {
             Ok(current.as_deref() == Some(want.as_str()))
         })
     }
+
+    fn has_rollback(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

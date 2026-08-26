@@ -96,6 +96,9 @@ pub enum StepRunState {
     Done,
     /// Step's `apply` returned an error.
     Failed,
+    /// Step applied successfully but its effects were later undone by
+    /// `archanist rollback`.
+    RolledBack,
 }
 
 fn empty_payload() -> toml::Value {

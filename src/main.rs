@@ -483,18 +483,38 @@ async fn run_rollback(
             base_dir: cfg.base_dir.clone(),
             is_self_update,
         };
+        let suffix = if step.has_rollback() { "" } else { " (no-op)" };
         match finished_at {
-            Some(t) => println!("rolling back step '{}' (applied at {})", step_cfg.id, t),
-            None => println!("rolling back step '{}'", step_cfg.id),
+            Some(t) => println!(
+                "rolling back step '{}' (applied at {}){}",
+                step_cfg.id, t, suffix
+            ),
+            None => println!("rolling back step '{}'{}", step_cfg.id, suffix),
         }
         step.rollback(&ctx, &payload)
             .await
             .with_context(|| format!("rollback of step '{}' failed", step_cfg.id))?;
-        // Flip the slot to Failed so a re-run picks it up cleanly.
+        // Mark the slot as rolled back so status output stays honest and
+        // a subsequent rollback correctly reports "nothing to roll back".
         if let Some(slot) = attempt.steps.iter_mut().find(|s| s.id == step_cfg.id) {
-            slot.state = state::StepRunState::Failed;
+            slot.state = state::StepRunState::RolledBack;
             slot.message = Some("rolled back".into());
         }
+    }
+
+    // If every previously-completed step in the attempt is now rolled
+    // back, restore the component's `current_version` to what it was
+    // before the attempt began. Otherwise leave the state alone - a
+    // partial rollback keeps `current_version` on the new version so
+    // the operator can see what's still in place.
+    let still_done = attempt
+        .steps
+        .iter()
+        .any(|s| s.state == state::StepRunState::Done);
+    if !still_done {
+        let starting = attempt.current_version.clone();
+        entry.current_version = starting;
+        entry.previous_version = None;
     }
     Ok(())
 }
