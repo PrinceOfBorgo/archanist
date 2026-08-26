@@ -69,13 +69,11 @@ enum Commands {
     /// Print current state (versions, last check, blocklist).
     Status {
         /// Only show this component. Omit to show all.
-        #[arg(short = 'n', long)]
         component: Option<String>,
     },
     /// Check upstream release feeds for available updates.
     Check {
         /// Only check this component. Omit to check all.
-        #[arg(short = 'n', long)]
         component: Option<String>,
     },
     /// Roll a component back by invoking each applied step's rollback in reverse order.
@@ -86,7 +84,6 @@ enum Commands {
     /// Check for updates and apply them if a newer version is available.
     Update {
         /// Only update this component. Omit to update all.
-        #[arg(short = 'n', long)]
         component: Option<String>,
     },
     /// Clear a version from the blocklist so it can be installed again.
