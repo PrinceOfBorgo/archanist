@@ -366,11 +366,14 @@ async fn run_check(
                 };
                 println!("current={}, latest={}{}", current, latest, marker);
 
-                // Probe each configured step to report which ones would
-                // actually do work if `update` were run right now. This
-                // uses the same env `run_update` would seed with, so
-                // step bodies interpolate against the target version.
-                if !comp.steps.is_empty() {
+                // When there's an update available, probe each configured
+                // step to report which ones would actually do work if
+                // `update` were run right now. This uses the same env
+                // `run_update` would seed with, so step bodies interpolate
+                // against the target version. Skipped when we're already
+                // up to date - the extra line is misleading noise for
+                // step kinds that don't implement `is_satisfied`.
+                if update_available && !comp.steps.is_empty() {
                     let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
                     let mut base_env = interp::Env::new();
                     base_env.insert("version".into(), latest.clone());
