@@ -3,6 +3,7 @@ name = "archanist"
 version = "0.1.0-SNAPSHOT"
 authors = ["Michele Medori <michele.medori93@gmail.com>"]
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.102"
