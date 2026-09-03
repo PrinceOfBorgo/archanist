@@ -35,7 +35,7 @@ state_file = "state.toml"
 # Directory containing component recipe files (relative to this config file, or absolute).
 components_dir = "components"
 
-# [optional] Which component file represents this archanist for self-update purposes.
+# [Optional] Which component file represents this archanist for self-update purposes.
 # Must match a filename in components_dir (without .toml extension).
 # self_component = "archanist"
 "#;
