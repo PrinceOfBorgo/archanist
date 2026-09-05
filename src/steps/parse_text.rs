@@ -294,11 +294,11 @@ Intro.
 
 The following table lists migrations.
 
-| Version | Migrations                                              | Notes |
-| ------- | ------------------------------------------------------- | ----- |
-| v0.2.0  | `001_init.sql`                                          | init  |
-| v0.2.3  | ~~`002_add_ts.sql`~~, `003_create_XYZ.sql`              |       |
-| v0.2.4  | `002_add_ts.sql`, `004_overwrite_X.sql`                 |       |
+| Version | Migrations                                 | Notes   |
+| ------- | -------------------------------------------| ------- |
+| v0.2.0  | `001_init.sql`                             | init    |
+| v0.2.3  | ~~`002_add_ts.sql`~~, `003_create_XYZ.sql` |         |
+| v0.2.4  | `002_add_ts.sql`, `004_overwrite_X.sql`    | fix 002 |
 
 ## Next Section
 
