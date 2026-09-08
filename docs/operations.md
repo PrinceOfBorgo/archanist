@@ -172,17 +172,22 @@ myapp: no completed steps in last attempt, nothing to roll back
 | Step type      | Rollback does...                                                                                                                                                                              |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `shell`        | Nothing (labeled `(no-op)`).                                                                                                                                                                  |
-| `download`     | Nothing (labeled `(no-op)`).                                                                                                                                                                  |
+| `download`     | With `backup = true` (default), restores the previous `dest` from the snapshot, or deletes it if the download created it. With `backup = false`, nothing (labeled `(no-op)`).                 |
 | `http_health`  | Nothing (labeled `(no-op)`).                                                                                                                                                                  |
-| `copy_files`   | Nothing (labeled `(no-op)`).                                                                                                                                                                  |
-| `config_merge` | Nothing (labeled `(no-op)`).                                                                                                                                                                  |
+| `copy_files`   | With `backup = true` (default), restores every overwritten destination file and deletes every file this step created. With `backup = false`, nothing (labeled `(no-op)`).                     |
+| `config_merge` | With `backup = true` (default), restores `target` to its pre-merge contents. With `backup = false`, nothing (labeled `(no-op)`).                                                              |
 | `parse_text`   | Nothing (labeled `(no-op)`).                                                                                                                                                                  |
 | `db_migrate`   | If `rollback_command` is set, runs it once per stem that this attempt applied, newest first, and trims each stem from the on-disk applied-migrations log. If unset, logs a warning and skips. |
 | `docker_swap`  | Pulls the previously-recorded image, stops and removes the container, then recreates it from the previous image. If no previous image was recorded (fresh install), logs a warning and skips. |
 
-`shell` / `download` / `http_health` / `copy_files` / `config_merge`
-are irreversible by design - write forward-only migrations or provide
-a paired down-migration for `db_migrate` instead.
+File-writing steps (`download`, `copy_files`, `config_merge`) snapshot
+the exact paths they touch under
+`<base_dir>/.archanist-backups/<component>/<step_id>/` before writing,
+keyed by step id. Each attempt wipes and recreates its own backup dir,
+so the snapshot always reflects the most recent attempt - which means
+`rollback` can undo even a *successful* update, up until the next
+attempt overwrites the backup. Set `backup = false` on a step to make
+it forward-only (its rollback becomes a no-op).
 
 ### Retry after rollback
 

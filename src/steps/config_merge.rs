@@ -3,7 +3,13 @@
 //! Uses [`toml_edit`] so target comments and key ordering are preserved.
 //! Values in `patch` overwrite values in `target`; nested tables
 //! recurse; missing keys are added.
+//!
+//! When `backup = true` (the default) the `target` is snapshotted before
+//! the merged result is written, so `archanist rollback` restores the
+//! pre-merge file. Set `backup = false` to skip this (rollback then
+//! becomes a no-op).
 
+use crate::steps::backup::{self, BackupBuilder};
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -14,12 +20,19 @@ use tracing::info;
 pub struct ConfigMerge {
     target: String,
     patch: String,
+    backup: bool,
 }
 
 #[derive(Deserialize)]
 struct ConfigMergeRaw {
     target: String,
     patch: String,
+    #[serde(default = "default_backup")]
+    backup: bool,
+}
+
+fn default_backup() -> bool {
+    true
 }
 
 impl ConfigMerge {
@@ -28,6 +41,7 @@ impl ConfigMerge {
         Ok(Self {
             target: raw.target,
             patch: raw.patch,
+            backup: raw.backup,
         })
     }
 }
@@ -78,6 +92,16 @@ impl Step for ConfigMerge {
 
             merge_tables(target_doc.as_table_mut(), patch_doc.as_table());
 
+            // Snapshot the target before overwriting it with the merge.
+            let mut manifest = None;
+            if self.backup {
+                let mut b = BackupBuilder::new(backup::reset(ctx).await?);
+                b.record(target).await.with_context(|| {
+                    format!("step '{}': failed to back up {}", id, target.display())
+                })?;
+                manifest = Some(b.finish());
+            }
+
             tokio::fs::write(target, target_doc.to_string())
                 .await
                 .with_context(|| {
@@ -87,8 +111,33 @@ impl Step for ConfigMerge {
                         target.display()
                     )
                 })?;
-            Ok(StepOutcome::default())
+            let mut outcome = StepOutcome::default();
+            if let Some(m) = manifest {
+                outcome.payload = backup::to_payload(&m)?;
+            }
+            Ok(outcome)
         })
+    }
+
+    fn rollback<'a>(
+        &'a self,
+        ctx: &'a StepCtx,
+        payload: &'a toml::Value,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let manifest = backup::from_payload(payload);
+            if manifest.is_empty() {
+                return Ok(());
+            }
+            info!("[{}] restoring merged file from backup", ctx.step_id);
+            backup::restore(&manifest)
+                .await
+                .with_context(|| format!("step '{}': failed to restore backup", ctx.step_id))
+        })
+    }
+
+    fn has_rollback(&self) -> bool {
+        self.backup
     }
 }
 

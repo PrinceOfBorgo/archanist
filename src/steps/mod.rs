@@ -5,6 +5,7 @@
 //! register it in [`builtin_registry`] so `${var}` interpolation, the
 //! pipeline runner, and `archanist step-kinds` all see it.
 
+pub mod backup;
 pub mod config_merge;
 pub mod copy_files;
 pub mod db_migrate;

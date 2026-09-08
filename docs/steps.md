@@ -65,12 +65,15 @@ Fetch a file over HTTP into a target path.
 | ------ | ------ | ---------- | ------------------------------------------------------------------------------------- |
 | `url`  | string | (required) | HTTP or HTTPS URL. Any status ≠ 2xx fails the step.                                   |
 | `dest` | string | (required) | Local path to write. Missing parent directories are created. Existing files replaced. |
+| `backup` | bool | `true` | Snapshot `dest` before overwriting so `rollback` can restore it (or delete a freshly-downloaded file). Set `false` to opt out. |
 
 ### Behavior
 
 - `apply` downloads the URL body to `dest` in one shot, with a
   30-second timeout.
-- `rollback` - no-op.
+- `rollback` - when `backup = true`, restores the previous `dest` from
+  the snapshot, or deletes it if the download created it. With
+  `backup = false`, a no-op.
 - `is_satisfied` - default `false`.
 
 ### Example
@@ -135,12 +138,15 @@ overwritten.
 | ------ | ------ | ---------- | ----------------------------------------------------------------------------- |
 | `src`  | string | (required) | Source path. Can be a file or a directory.                                    |
 | `dest` | string | (required) | Destination path. If `src` is a directory, `dest` becomes its recursive copy. |
+| `backup` | bool | `true` | Snapshot every destination path this step writes before writing it, so `rollback` can restore overwritten files and delete newly-created ones. Set `false` to opt out. |
 
 ### Behavior
 
 - `apply` copies. Sources that don't exist fail the step; sources that
   are neither files nor directories fail explicitly.
-- `rollback` - no-op.
+- `rollback` - when `backup = true`, restores every file this step
+  overwrote and deletes every file it created (only the destination
+  paths actually written are touched). With `backup = false`, a no-op.
 - `is_satisfied` - default `false`.
 
 ### Example
@@ -166,12 +172,14 @@ so the target's comments and key ordering are preserved.
 | -------- | ------ | ---------- | ------------------------------------------------- |
 | `target` | string | (required) | Path to the TOML file to modify in place.         |
 | `patch`  | string | (required) | Path to the TOML file whose values are merged in. |
+| `backup` | bool | `true` | Snapshot `target` before writing the merged result so `rollback` can restore the pre-merge file. Set `false` to opt out. |
 
 ### Behavior
 
 - `apply` deep-merges: values in `patch` overwrite values in `target`;
   nested tables recurse; missing keys are added.
-- `rollback` - no-op.
+- `rollback` - when `backup = true`, restores `target` to its
+  pre-merge contents from the snapshot. With `backup = false`, a no-op.
 - `is_satisfied` - default `false`.
 
 ### Example

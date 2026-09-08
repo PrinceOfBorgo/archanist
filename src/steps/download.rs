@@ -1,7 +1,13 @@
 //! `download`: fetch a file over HTTP into the target path. Missing
 //! parent directories are created automatically. Typically used to
 //! stage a release bundle for later `copy_files` / `db_migrate` steps.
+//!
+//! When `backup = true` (the default) the destination is snapshotted
+//! before it is overwritten, so `archanist rollback` restores the prior
+//! file or deletes a freshly-downloaded one. Set `backup = false` to skip
+//! this (rollback then becomes a no-op).
 
+use crate::steps::backup::{self, BackupBuilder};
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -12,12 +18,19 @@ use tracing::info;
 pub struct Download {
     url: String,
     dest: String,
+    backup: bool,
 }
 
 #[derive(Deserialize)]
 struct DownloadRaw {
     url: String,
     dest: String,
+    #[serde(default = "default_backup")]
+    backup: bool,
+}
+
+fn default_backup() -> bool {
+    true
 }
 
 impl Download {
@@ -26,6 +39,7 @@ impl Download {
         Ok(Self {
             url: raw.url,
             dest: raw.dest,
+            backup: raw.backup,
         })
     }
 }
@@ -68,6 +82,16 @@ impl Step for Download {
                 .await
                 .with_context(|| format!("step '{}': failed to read body of {}", id, url))?;
 
+            // Snapshot the destination before overwriting it.
+            let mut manifest = None;
+            if self.backup {
+                let mut b = BackupBuilder::new(backup::reset(ctx).await?);
+                b.record(dest).await.with_context(|| {
+                    format!("step '{}': failed to back up {}", id, dest.display())
+                })?;
+                manifest = Some(b.finish());
+            }
+
             tokio::fs::write(dest, &bytes).await.with_context(|| {
                 format!("step '{}': failed to write {}", id, dest.display())
             })?;
@@ -78,7 +102,32 @@ impl Step for Download {
                 bytes.len(),
                 dest.display()
             );
-            Ok(StepOutcome::default())
+            let mut outcome = StepOutcome::default();
+            if let Some(m) = manifest {
+                outcome.payload = backup::to_payload(&m)?;
+            }
+            Ok(outcome)
         })
+    }
+
+    fn rollback<'a>(
+        &'a self,
+        ctx: &'a StepCtx,
+        payload: &'a toml::Value,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let manifest = backup::from_payload(payload);
+            if manifest.is_empty() {
+                return Ok(());
+            }
+            info!("[{}] restoring downloaded file from backup", ctx.step_id);
+            backup::restore(&manifest)
+                .await
+                .with_context(|| format!("step '{}': failed to restore backup", ctx.step_id))
+        })
+    }
+
+    fn has_rollback(&self) -> bool {
+        self.backup
     }
 }
