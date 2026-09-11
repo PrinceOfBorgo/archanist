@@ -19,7 +19,23 @@
 //! stems applied by the current attempt in reverse and runs
 //! `rollback_command` (a no-op when it's absent - the step is
 //! forward-only).
+//!
+//! For engines where per-migration down-scripts are impractical, an
+//! optional `backup_command` plus a `restore` list does a whole-database
+//! snapshot instead: `backup_command` runs once before any migration and
+//! the `restore` runs execute in order on rollback, all with the
+//! `{backup}` placeholder pointing at a per-attempt directory under
+//! `.archanist-backups`. The `restore` list takes precedence over
+//! `rollback_command` when both are set.
+//!
+//! When `image` is set, `command` / `backup_command` / restore commands
+//! run as the argv of a throwaway container from that image (through the
+//! same Docker socket `docker_swap` uses) instead of as host
+//! subprocesses, so the tool - a DB client, ... - lives in its own image
+//! rather than the archanist one. Bind the data volume with `binds` so
+//! the `{file}` / `{backup}` paths resolve identically inside it.
 
+use crate::steps::backup;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -65,13 +81,64 @@ pub struct DbMigrateStep {
     /// and rollback is a warned no-op.
     #[serde(default)]
     pub rollback_command: Option<Vec<String>>,
-    /// Optional working directory for `command` / `rollback_command`.
+    /// Optional argv run once BEFORE any migration to snapshot the whole
+    /// database. `{backup}` is replaced with a fresh per-attempt directory
+    /// under `.archanist-backups`. A failure here fails the step before
+    /// any migration runs. Pairs with the `restore` list.
+    #[serde(default)]
+    pub backup_command: Option<Vec<String>>,
+    /// Optional ordered list of restore runs executed on rollback IN
+    /// PLACE OF `rollback_command` to restore the snapshot taken by
+    /// `backup_command`. Each run's `command` gets the `{backup}`
+    /// placeholder substituted; an optional `stdin` is fed verbatim.
+    /// Takes precedence over `rollback_command` when both are set.
+    #[serde(default)]
+    pub restore: Vec<RestoreRun>,
+    /// Optional working directory for host-mode `command` /
+    /// `rollback_command`. Also used as the container working directory
+    /// when `image` is set and `workdir` is unset.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// When set, `command` / `backup_command` / restore commands run as
+    /// the argv of a throwaway container from this image (via the Docker
+    /// API) instead of as a host subprocess. Component tooling lives in
+    /// this image, not in the archanist image.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// User network the helper container joins (`--network`).
+    #[serde(default)]
+    pub network: Option<String>,
+    /// `--add-host` entries for the helper container (`host:ip`).
+    #[serde(default)]
+    pub extra_hosts: Vec<String>,
+    /// Bind mounts for the helper container in `host:container[:mode]` form.
+    #[serde(default)]
+    pub binds: Vec<String>,
+    /// Working directory inside the helper container. Falls back to `cwd`.
+    #[serde(default)]
+    pub workdir: Option<String>,
+    /// Pull the helper `image` before each run. Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub pull: bool,
+}
+
+/// One restore invocation in a [`DbMigrateStep::restore`] list.
+#[derive(Debug, Deserialize)]
+pub struct RestoreRun {
+    /// argv template. `{backup}` is replaced with the snapshot directory.
+    pub command: Vec<String>,
+    /// Optional stdin fed to the run, then closed. Passed verbatim (no
+    /// `{backup}` substitution) - used e.g. to send DDL to a SQL shell.
+    #[serde(default)]
+    pub stdin: Option<String>,
 }
 
 fn default_split() -> String {
     "\n".to_string()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Persisted per-component/per-step applied-migrations log, plus the
@@ -83,6 +150,11 @@ struct MigratePayload {
     /// rollback payload it is only the stems applied by this attempt.
     #[serde(default)]
     applied: Vec<String>,
+    /// Backup directory produced by `backup_command` this attempt, if any.
+    /// Only meaningful in the per-attempt rollback payload; skipped in the
+    /// on-disk cumulative log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backup_dir: Option<String>,
 }
 
 impl DbMigrateStep {
@@ -112,6 +184,38 @@ impl DbMigrateStep {
             .join(&ctx.component)
             .join(format!("{}.toml", ctx.step_id))
     }
+
+    /// Run one command, dispatching to a host subprocess or - when
+    /// `image` is set - to a throwaway helper container.
+    async fn exec(&self, id: &str, argv: &[String], stdin: Option<&str>) -> Result<()> {
+        match &self.image {
+            None => run(argv, self.cwd.as_deref(), id).await,
+            Some(image) => {
+                let docker = crate::docker::DockerClient::connect()?;
+                let code = docker
+                    .run_to_completion(
+                        id,
+                        crate::docker::ContainerRunSpec {
+                            image: image.clone(),
+                            cmd: argv.to_vec(),
+                            env: Vec::new(),
+                            binds: self.binds.clone(),
+                            network: self.network.clone(),
+                            extra_hosts: self.extra_hosts.clone(),
+                            working_dir: self.workdir.clone().or_else(|| self.cwd.clone()),
+                            entrypoint: None,
+                            stdin: stdin.map(str::to_owned),
+                            pull: self.pull,
+                        },
+                    )
+                    .await?;
+                if code != 0 {
+                    bail!("step '{}': migration container exited with {}", id, code);
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 fn resolve(base: &Path, raw: &str) -> PathBuf {
@@ -132,6 +236,16 @@ fn render_argv(template: &[String], file: &Path) -> Vec<String> {
     template
         .iter()
         .map(|s| s.replace("{file}", &file_str).replace("{name}", &name))
+        .collect()
+}
+
+/// Substitute `{backup}` (the per-attempt snapshot directory) in every
+/// argv element of a `backup_command` / `restore` template.
+fn render_backup_argv(template: &[String], backup_dir: &Path) -> Vec<String> {
+    let dir = backup_dir.to_string_lossy().to_string();
+    template
+        .iter()
+        .map(|s| s.replace("{backup}", &dir))
         .collect()
 }
 
@@ -172,8 +286,11 @@ fn save_applied(path: &Path, applied: &HashSet<String>) -> Result<()> {
     }
     let mut sorted: Vec<String> = applied.iter().cloned().collect();
     sorted.sort();
-    let content = toml::to_string_pretty(&MigratePayload { applied: sorted })
-        .context("failed to serialize migrations log")?;
+    let content = toml::to_string_pretty(&MigratePayload {
+        applied: sorted,
+        backup_dir: None,
+    })
+    .context("failed to serialize migrations log")?;
     std::fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
@@ -223,7 +340,31 @@ impl Step for DbMigrateStep {
 
             let payload_path = self.payload_path(ctx);
             let mut applied = load_applied(&payload_path);
-            let cwd = self.cwd.as_deref();
+
+            // Snapshot the whole database before touching it, if configured.
+            let backup_dir = if let Some(tpl) = &self.backup_command {
+                let dir = backup::reset(ctx).await?;
+                // The helper `image` container may run as a non-root user
+                // while this dir was created by Archanist (root), so make it
+                // writable for the export.
+                // Unix-only: this is a POSIX uid/mode concern and `from_mode`
+                // doesn't exist on other targets.
+                #[cfg(unix)]
+                if self.image.is_some() {
+                    use std::os::unix::fs::PermissionsExt;
+                    tokio::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+                        .await
+                        .with_context(|| {
+                            format!("failed to make backup dir {} writable", dir.display())
+                        })?;
+                }
+                info!("[{}] backing up database before migrations", id);
+                let argv = render_backup_argv(tpl, &dir);
+                self.exec(id, &argv, None).await?;
+                Some(dir.to_string_lossy().to_string())
+            } else {
+                None
+            };
 
             let mut applied_this_attempt: Vec<String> = Vec::new();
             info!("[{}] evaluating {} migration(s)", id, files.len());
@@ -237,7 +378,7 @@ impl Step for DbMigrateStep {
                     continue;
                 }
                 let argv = render_argv(&self.command, file);
-                run(&argv, cwd, id).await?;
+                self.exec(id, &argv, None).await?;
                 applied.insert(stem.clone());
                 applied_this_attempt.push(stem);
                 // Persist after every successful migration so a crash
@@ -247,6 +388,7 @@ impl Step for DbMigrateStep {
 
             let attempt_payload = MigratePayload {
                 applied: applied_this_attempt,
+                backup_dir,
             };
             Ok(StepOutcome {
                 payload: toml::Value::try_from(&attempt_payload)
@@ -263,6 +405,37 @@ impl Step for DbMigrateStep {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let id = &ctx.step_id;
+            let pl: MigratePayload = payload.clone().try_into().unwrap_or_default();
+
+            // The `restore` list wins: whole-database restore runs revert
+            // every migration this attempt applied at once.
+            if !self.restore.is_empty() {
+                if pl.applied.is_empty() {
+                    return Ok(());
+                }
+                let Some(dir) = pl.backup_dir.as_deref() else {
+                    warn!(
+                        "step '{}': no backup recorded this attempt; cannot restore",
+                        id
+                    );
+                    return Ok(());
+                };
+                info!("[{}] restoring database from snapshot", id);
+                for r in &self.restore {
+                    let argv = render_backup_argv(&r.command, Path::new(dir));
+                    self.exec(id, &argv, r.stdin.as_deref()).await?;
+                }
+                // The restore reverted every migration at once; drop them
+                // all from the on-disk applied log.
+                let payload_path = self.payload_path(ctx);
+                let mut applied = load_applied(&payload_path);
+                for stem in &pl.applied {
+                    applied.remove(stem);
+                }
+                save_applied(&payload_path, &applied)?;
+                return Ok(());
+            }
+
             let Some(template) = &self.rollback_command else {
                 warn!(
                     "step '{}': no rollback_command set; leaving migrations applied",
@@ -270,18 +443,16 @@ impl Step for DbMigrateStep {
                 );
                 return Ok(());
             };
-            let pl: MigratePayload = payload.clone().try_into().unwrap_or_default();
             if pl.applied.is_empty() {
                 return Ok(());
             }
             let payload_path = self.payload_path(ctx);
             let mut applied = load_applied(&payload_path);
-            let cwd = self.cwd.as_deref();
 
             info!("[{}] rolling back {} migration(s)", id, pl.applied.len());
             for stem in pl.applied.iter().rev() {
                 let argv = render_argv(template, Path::new(stem));
-                run(&argv, cwd, id).await?;
+                self.exec(id, &argv, None).await?;
                 applied.remove(stem);
                 save_applied(&payload_path, &applied)?;
             }
@@ -290,7 +461,7 @@ impl Step for DbMigrateStep {
     }
 
     fn has_rollback(&self) -> bool {
-        self.rollback_command.is_some()
+        self.rollback_command.is_some() || !self.restore.is_empty()
     }
 }
 
@@ -417,6 +588,59 @@ mod tests {
             step.rollback_command.as_deref(),
             Some(&["migrate".to_string(), "down".to_string(), "{name}".into()][..])
         );
+    }
+
+    #[test]
+    fn render_backup_substitutes_dir() {
+        let out = render_backup_argv(
+            &["pg_dump".into(), "-f".into(), "{backup}/dump.pgc".into()],
+            Path::new("/tmp/bk"),
+        );
+        assert_eq!(out, vec!["pg_dump", "-f", "/tmp/bk/dump.pgc"]);
+    }
+
+    #[test]
+    fn from_body_accepts_backup_and_restore_commands() {
+        let step = DbMigrateStep::from_body(body(
+            r#"
+                files = ["a.sql"]
+                command = ["psql", "-f", "{file}"]
+                backup_command = ["pg_dump", "-f", "{backup}/dump.pgc"]
+                restore = [{ command = ["pg_restore", "{backup}/dump.pgc"] }]
+            "#,
+        ))
+        .unwrap();
+        assert!(step.backup_command.is_some());
+        assert!(!step.restore.is_empty());
+        assert!(step.has_rollback());
+    }
+
+    #[test]
+    fn from_body_accepts_image_and_restore_with_stdin() {
+        let step = DbMigrateStep::from_body(body(
+            r#"
+                files = ["a.surql"]
+                command = ["surreal", "import", "{file}"]
+                image = "surrealdb/surrealdb:v2.3.5"
+                binds = ["/host:/app/data"]
+                extra_hosts = ["host.docker.internal:host-gateway"]
+                backup_command = ["surreal", "export", "{backup}/pre.surql"]
+                restore = [
+                    { command = ["surreal", "sql"], stdin = "REMOVE DATABASE IF EXISTS d;" },
+                    { command = ["surreal", "import", "{backup}/pre.surql"] },
+                ]
+            "#,
+        ))
+        .unwrap();
+        assert_eq!(step.image.as_deref(), Some("surrealdb/surrealdb:v2.3.5"));
+        assert_eq!(step.binds, vec!["/host:/app/data"]);
+        assert_eq!(step.restore.len(), 2);
+        assert_eq!(
+            step.restore[0].stdin.as_deref(),
+            Some("REMOVE DATABASE IF EXISTS d;")
+        );
+        assert!(step.restore[1].stdin.is_none());
+        assert!(step.has_rollback());
     }
 
     #[test]

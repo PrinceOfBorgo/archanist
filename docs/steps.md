@@ -13,6 +13,7 @@ Steps that don't override the default no-op `rollback` are still
 listed by `archanist rollback` but tagged `(no-op)`.
 
 - [`shell`](#shell)
+- [`container_run`](#container_run)
 - [`download`](#download)
 - [`http_health`](#http_health)
 - [`copy_files`](#copy_files)
@@ -52,6 +53,55 @@ type    = "shell"
 shell   = "pwsh"
 command = "Restart-Service -Name myapp"
 ```
+
+---
+
+## <a id="container_run"></a> `container_run`
+
+Run a one-shot helper container to completion through the Docker API,
+then remove it. The generic way to use a component-specific tool
+(`unzip`, a database client, `rsync`, ...) without baking it into the
+archanist image: name the tool's image and the engine creates the
+container over the same mounted Docker socket `docker_swap` uses.
+
+### Body
+
+| Field         | Type          | Default    | Notes                                                                                 |
+| ------------- | ------------- | ---------- | ------------------------------------------------------------------------------------- |
+| `image`       | string        | (required) | Image to run. Must be non-empty.                                                      |
+| `command`     | array<string> | `[]`       | Command argv. Empty leaves the image's default command in place.                      |
+| `env`         | array<string> | `[]`       | `KEY=VALUE` environment entries.                                                      |
+| `binds`       | array<string> | `[]`       | Bind mounts in `host:container[:mode]` form (host-side paths, as with `docker_swap`). |
+| `network`     | string        | none       | User network to join (equivalent to `--network`).                                     |
+| `extra_hosts` | array<string> | `[]`       | `--add-host` entries in `host:ip` form (e.g. `host.docker.internal:host-gateway`).    |
+| `workdir`     | string        | none       | Working directory inside the container.                                               |
+| `entrypoint`  | array<string> | none       | Overrides the image entrypoint when set.                                              |
+| `stdin`       | string        | none       | Text fed to the container's stdin, after which stdin is closed.                       |
+| `pull`        | bool          | `true`     | Pull `image` before running. Set `false` when it's already loaded locally.            |
+
+### Behavior
+
+- `apply` (optionally pulls, then) creates an anonymous container,
+  streams its stdout/stderr into the archanist log, waits for it to
+  exit, and removes it. A non-zero exit fails the step. The container
+  is removed even on error paths.
+- `rollback` - no-op.
+- `is_satisfied` - default `false`.
+
+### Example - extract a bundle with `busybox` (no `unzip` in the archanist image)
+
+```toml
+[[steps]]
+id      = "extract_bundle"
+type    = "container_run"
+image   = "busybox"
+binds   = ["${vars.host_data_dir}:/app/data"]
+command = ["unzip", "-o", "${vars.staging_zip}", "-d", "${vars.staging_root}"]
+```
+
+Paths in `command` are the container-visible `/app/data/...` view, so
+they resolve to the same bytes archanist itself reads because the data
+volume is mounted once via `binds`.
 
 ---
 
@@ -274,7 +324,9 @@ Driver-agnostic forward-only migration runner with per-run
 persistence. Sources migrations either from a glob or from an explicit
 list; runs each file through a user-supplied `command` template; skips
 files that succeeded on a previous attempt; optionally reverses each
-file with a `rollback_command`.
+file with a `rollback_command`, or snapshots the whole database with a
+`backup_command` plus a `restore` list. Every command runs either as a
+host subprocess or, when `image` is set, inside a throwaway container.
 
 ### Body
 
@@ -286,7 +338,15 @@ file with a `rollback_command`.
 | `base`             | string                  | `ctx.base_dir` | Prefix for non-absolute paths in `files` / `glob`.                                          |
 | `command`          | array<string>           | (required)     | argv template. Must be non-empty.                                                           |
 | `rollback_command` | array<string>           | none           | argv template for reverting a single migration by stem. See below.                          |
-| `cwd`              | string                  | none           | Working directory for `command` / `rollback_command`.                                       |
+| `backup_command`   | array<string>           | none           | argv run once BEFORE any migration to snapshot the database. `{backup}` placeholder. See below. |
+| `restore`          | array<table\>           | `[]`           | Ordered restore runs executed on rollback in place of `rollback_command`. Each has a `command` (with `{backup}`) and optional `stdin`. Takes precedence over `rollback_command`. |
+| `cwd`              | string                  | none           | Working directory for host-mode `command` / `rollback_command` (and the container workdir when `workdir` is unset). |
+| `image`            | string                  | none           | Run `command` / `backup_command` / `restore` commands as the argv of a throwaway container from this image instead of as host subprocesses. |
+| `network`          | string                  | none           | User network the helper container joins (`--network`). Only with `image`.                   |
+| `extra_hosts`      | array<string>           | `[]`           | `--add-host` entries for the helper container. Only with `image`.                           |
+| `binds`            | array<string>           | `[]`           | Bind mounts for the helper container in `host:container[:mode]` form. Only with `image`.     |
+| `workdir`          | string                  | none           | Working directory inside the helper container. Only with `image`.                           |
+| `pull`             | bool                    | `true`         | Pull `image` before each run. Only with `image`.                                            |
 
 ### Step-local placeholders
 
@@ -297,22 +357,40 @@ migration):
 - `{file}` - full path to the migration file
 - `{name}` - the file's stem (filename without extension)
 
+`backup_command` and each `restore` command use a single placeholder
+instead:
+
+- `{backup}` - a fresh per-attempt directory under
+  `<base_dir>/.archanist-backups/<component>/<step_id>/` for the dump
+  to be written to and read back from.
+
 These are **step-local** and intentionally distinct from the pipeline
 `${...}` syntax. Recipe-wide vars are resolved first (before the step
-runs); the `{file}` / `{name}` substitution happens inside the step
-per iteration.
+runs); the `{file}` / `{name}` / `{backup}` substitution happens inside
+the step.
 
 ### Behavior
 
-- `apply` resolves the file list, applies each unapplied migration in
-  stem order, and persists the applied-stems set to
+- `apply` optionally runs `backup_command` first (a failure fails the
+  step before any migration), then resolves the file list, applies
+  each unapplied migration in stem order, and persists the
+  applied-stems set to
   `<base_dir>/.archanist-migrations/<component>/<step_id>.toml` after
   every successful migration. Subsequent runs skip stems already in
   that file.
-- `rollback` iterates the stems applied by the current attempt in
-  reverse and runs `rollback_command` for each. When
-  `rollback_command` is unset, rollback is a warned no-op and the
-  migrations stay applied.
+- `rollback` - if the `restore` list is non-empty, runs each restore
+  command in order to restore the snapshot (reverting every migration
+  this attempt applied at once) and clears those stems from the log.
+  Otherwise, if `rollback_command` is set, iterates the stems applied
+  by the current attempt in reverse and runs it for each. When neither
+  is set, rollback is a warned no-op and the migrations stay applied.
+- When `image` is set, every command (`command`, `backup_command`, and
+  each `restore` command) runs as the argv of a throwaway container
+  from that image via the Docker socket rather than as a host
+  subprocess. Mount the data volume with `binds` so the `{file}` /
+  `{backup}` paths resolve identically inside it. The per-attempt
+  `{backup}` directory is made world-writable first, so a container that
+  runs as a non-root user can still write its dump into it.
 - `is_satisfied` - default `false`.
 
 ### Example - files list published by an upstream `parse_text`
@@ -337,6 +415,53 @@ type    = "db_migrate"
 glob    = "*.sql"
 base    = "${vars.bundle_dir}/db/up"
 command = ["psql", "-d", "myapp", "-f", "{file}"]
+```
+
+### Example - whole-database snapshot instead of down-scripts
+
+```toml
+[[steps]]
+id      = "migrate"
+type    = "db_migrate"
+glob    = "*.sql"
+base    = "${vars.bundle_dir}/db/up"
+command        = ["psql", "-d", "myapp", "-f", "{file}"]
+backup_command = ["pg_dump", "-Fc", "-d", "myapp", "-f", "{backup}/dump.pgc"]
+
+[[steps.restore]]
+command = ["pg_restore", "--clean", "-d", "myapp", "{backup}/dump.pgc"]
+```
+
+### Example - run the migration tool in its own container
+
+The `psql` / `pg_dump` / `pg_restore` tools aren't in the archanist
+image, so run them from the official `postgres` image. `binds` mounts
+the data volume once, so the container-visible `{file}` / `{backup}`
+paths match archanist's own view. Here `restore` is two runs: drop and
+recreate the schema (DDL sent via `stdin` to `psql`), then restore the
+dump. `${vars.pg_url}` is a `postgresql://user:pass@host/db` DSN, so no
+extra password env is needed.
+
+```toml
+[[steps]]
+id    = "migrate"
+type  = "db_migrate"
+files = "${vars.migrations}"
+base  = "${vars.bundle_dir}/database/migrations"
+
+image       = "postgres:16"
+extra_hosts = ["host.docker.internal:host-gateway"]
+binds       = ["${vars.host_data_dir}:/app/data"]
+
+command = ["psql", "-d", "${vars.pg_url}", "-v", "ON_ERROR_STOP=1", "-f", "{file}"]
+backup_command = ["pg_dump", "-Fc", "-d", "${vars.pg_url}", "-f", "{backup}/pre-migrate.dump"]
+
+[[steps.restore]]
+command = ["psql", "-d", "${vars.pg_url}"]
+stdin = "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+
+[[steps.restore]]
+command = ["pg_restore", "-d", "${vars.pg_url}", "{backup}/pre-migrate.dump"]
 ```
 
 ---

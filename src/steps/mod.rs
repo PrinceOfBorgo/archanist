@@ -7,6 +7,7 @@
 
 pub mod backup;
 pub mod config_merge;
+pub mod container_run;
 pub mod copy_files;
 pub mod db_migrate;
 pub mod docker_swap;
@@ -192,6 +193,9 @@ pub fn builtin_registry() -> StepRegistry {
     r.register("config_merge", |b| {
         Ok(Box::new(config_merge::ConfigMerge::from_body(b)?))
     });
+    r.register("container_run", |b| {
+        Ok(Box::new(container_run::ContainerRun::from_body(b)?))
+    });
     r.register("parse_text", |b| {
         Ok(Box::new(parse_text::ParseTextStep::from_body(b)?))
     });
@@ -214,6 +218,7 @@ mod tests {
         let kinds = r.kinds();
         for expected in [
             "config_merge",
+            "container_run",
             "copy_files",
             "db_migrate",
             "docker_swap",

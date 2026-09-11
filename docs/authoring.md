@@ -236,7 +236,9 @@ Before shipping:
    run `archanist update <component>`, verify each step's effect.
 4. **Rollback**: run `archanist rollback <component>` and check that
    every reversible step actually reversed itself. `db_migrate`
-   should show the down-migrations executing in reverse order.
+   should show the down-migrations executing in reverse order (or, if
+   you use `backup_command` plus a `restore` list, the snapshot being
+   restored).
 5. **Re-update**: run `archanist update <component>` again after
    rollback and verify the pipeline completes cleanly the second
    time.
@@ -278,8 +280,10 @@ dest = "${vars.staging_dir}.zip"
 
 [[steps]]
 id      = "extract_bundle"
-type    = "shell"
-command = "unzip -o ${vars.staging_dir}.zip -d ${vars.staging_dir}"
+type    = "container_run"
+image   = "busybox"
+binds   = ["${vars.host_data_dir}:/app/data"]
+command = ["unzip", "-o", "${vars.staging_dir}.zip", "-d", "${vars.staging_dir}"]
 
 # --- Deploy ---
 [[steps]]
@@ -314,10 +318,12 @@ type    = "db_migrate"
 files   = "${vars.migrations}"
 base    = "${vars.staging_dir}/db/up"
 command = ["psql", "-d", "myapp", "-f", "{file}"]
-rollback_command = [
-  "psql", "-d", "myapp", "-f",
-  "${vars.staging_dir}/db/down/{name}.sql",
-]
+# Whole-database snapshot instead of per-migration down-scripts: dump
+# before the first migration, restore the dump on rollback.
+backup_command = ["pg_dump", "-Fc", "-d", "myapp", "-f", "{backup}/dump.pgc"]
+
+[[steps.restore]]
+command = ["pg_restore", "--clean", "-d", "myapp", "{backup}/dump.pgc"]
 
 # --- Container swap ---
 [[steps]]
