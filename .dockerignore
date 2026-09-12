@@ -1,0 +1,22 @@
+# Rust build artifacts
+target/
+Cargo.lock.bak
+
+# Local state and logs
+state.toml
+logs/
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Version control
+.git/
+.gitignore
+
+# Docs / CI - not needed to build the binary
+docs/
+.github/
+LICENSE
+CHANGELOG.md
+README.md

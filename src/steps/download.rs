@@ -92,16 +92,11 @@ impl Step for Download {
                 manifest = Some(b.finish());
             }
 
-            tokio::fs::write(dest, &bytes).await.with_context(|| {
-                format!("step '{}': failed to write {}", id, dest.display())
-            })?;
+            tokio::fs::write(dest, &bytes)
+                .await
+                .with_context(|| format!("step '{}': failed to write {}", id, dest.display()))?;
 
-            info!(
-                "[{}] wrote {} bytes to {}",
-                id,
-                bytes.len(),
-                dest.display()
-            );
+            info!("[{}] wrote {} bytes to {}", id, bytes.len(), dest.display());
             let mut outcome = StepOutcome::default();
             if let Some(m) = manifest {
                 outcome.payload = backup::to_payload(&m)?;

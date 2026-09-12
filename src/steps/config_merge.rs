@@ -61,18 +61,10 @@ impl Step for ConfigMerge {
             );
 
             let target_content = tokio::fs::read_to_string(target).await.with_context(|| {
-                format!(
-                    "step '{}': failed to read target {}",
-                    id,
-                    target.display()
-                )
+                format!("step '{}': failed to read target {}", id, target.display())
             })?;
             let patch_content = tokio::fs::read_to_string(patch).await.with_context(|| {
-                format!(
-                    "step '{}': failed to read patch {}",
-                    id,
-                    patch.display()
-                )
+                format!("step '{}': failed to read patch {}", id, patch.display())
             })?;
 
             let mut target_doc: DocumentMut = target_content.parse().with_context(|| {
@@ -105,11 +97,7 @@ impl Step for ConfigMerge {
             tokio::fs::write(target, target_doc.to_string())
                 .await
                 .with_context(|| {
-                    format!(
-                        "step '{}': failed to write merged {}",
-                        id,
-                        target.display()
-                    )
+                    format!("step '{}': failed to write merged {}", id, target.display())
                 })?;
             let mut outcome = StepOutcome::default();
             if let Some(m) = manifest {

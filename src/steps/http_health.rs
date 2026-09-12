@@ -54,10 +54,7 @@ impl Step for HttpHealth {
         Box::pin(async move {
             let id = &ctx.step_id;
             let url = &self.url;
-            info!(
-                "[{}] polling {} for HTTP {}",
-                id, url, self.expected_status
-            );
+            info!("[{}] polling {} for HTTP {}", id, url, self.expected_status);
             let client = reqwest::Client::builder()
                 .user_agent(concat!("archanist/", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(10))

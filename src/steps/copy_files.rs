@@ -50,19 +50,10 @@ impl Step for CopyFiles {
             let src = Path::new(&self.src);
             let dest = Path::new(&self.dest);
 
-            info!(
-                "[{}] copying {} to {}",
-                id,
-                src.display(),
-                dest.display()
-            );
+            info!("[{}] copying {} to {}", id, src.display(), dest.display());
 
             let meta = tokio::fs::metadata(src).await.with_context(|| {
-                format!(
-                    "step '{}': source not accessible: {}",
-                    id,
-                    src.display()
-                )
+                format!("step '{}': source not accessible: {}", id, src.display())
             })?;
 
             // Snapshot the destination paths we're about to write before we
