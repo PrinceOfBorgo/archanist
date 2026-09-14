@@ -1,0 +1,18 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+# Release type is inferred from the head commit message tag.
+# Recognised tags (matched as substrings):
+#   * `[release]`, `[release:patch]`, `[release:fix]`  -> `patch`
+#   * `[release:minor]`                                -> `minor`
+#   * `[release:major]`                                -> `major`
+# The pipeline skips when none is present.
+jobs:
+  release:
+    uses: PrinceOfBorgo/rust-github-workflows/.github/workflows/release-docker.yml@v2
+    permissions:
+      contents: write
+      packages: write

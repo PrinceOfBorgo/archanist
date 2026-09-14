@@ -6,32 +6,21 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
-anyhow = "1.0.102"
-bollard = "0.21.0"
-chrono = { version = "0.4.44", features = ["serde"] }
-clap = { version = "4.6.1", features = ["derive"] }
+anyhow = "1.0.104"
+bollard = "0.21.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.6", features = ["derive"] }
 crossterm = "0.29.0"
-futures-util = "0.3.32"
-glob = "0.3.3"
+futures-util = "0.3.34"
+glob = "0.3.4"
 ratatui = "0.30.2"
-regex = "1.12.4"
-reqwest = { version = "0.13.4", default-features = false, features = [
-    "rustls",
-    "json",
-] }
+regex = "1.13.1"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
 semver = "1.0.28"
-serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.52.3", features = [
-    "macros",
-    "rt",
-    "process",
-    "fs",
-    "io-util",
-    "net",
-    "time",
-] }
-toml = "1.1.2"
-toml_edit = "0.25.12"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["macros", "rt", "process", "fs", "io-util", "net", "time"] }
+toml = "1.1.6"
+toml_edit = "0.25.15"
 tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
