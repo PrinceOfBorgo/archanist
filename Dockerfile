@@ -1,38 +1,39 @@
 # syntax=docker/dockerfile:1.7
 
 # ------------------------------------------------------------
-# Build stage
+# Runtime image
 # ------------------------------------------------------------
-FROM rust:1.90-bookworm AS build
-WORKDIR /src
-
-# Cache dependencies first: copy manifests, create a stub main, build.
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src && echo 'fn main() {}' > src/main.rs && \
-    cargo build --release --locked && \
-    rm -rf src target/release/deps/archanist* target/release/archanist*
-
-# Real sources.
-COPY src ./src
-RUN cargo build --release --locked
-
-# ------------------------------------------------------------
-# Runtime stage
-# ------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+FROM alpine:latest AS runtime
+WORKDIR /app
 
 # Runtime deps:
-#   - ca-certificates: reqwest / TLS-backed release sources
+#   - ca-certificates: reqwest / rustls TLS root store for release sources
 #   - tini: PID 1 with sensible signal handling for `docker stop`
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates tini \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates tini
 
-COPY --from=build /src/target/release/archanist /usr/local/bin/archanist
+ARG TARGETPLATFORM
+ARG BIN_PATH_AMD64
+ARG BIN_PATH_ARM64
+ARG BIN_PATH_ARMV7
+
+# Copy the pre-built binaries for every supported platform, then keep only
+# the one matching the platform currently being built.
+COPY ${BIN_PATH_AMD64} /app/archanist-amd64
+COPY ${BIN_PATH_ARM64} /app/archanist-arm64
+COPY ${BIN_PATH_ARMV7} /app/archanist-armv7
+
+RUN case "${TARGETPLATFORM}" in \
+        "linux/amd64")  mv /app/archanist-amd64 /usr/local/bin/archanist ;; \
+        "linux/arm64")  mv /app/archanist-arm64 /usr/local/bin/archanist ;; \
+        "linux/arm/v7") mv /app/archanist-armv7 /usr/local/bin/archanist ;; \
+        *) echo "unsupported TARGETPLATFORM: ${TARGETPLATFORM}" >&2; exit 1 ;; \
+    esac && \
+    chmod +x /usr/local/bin/archanist && \
+    rm -f /app/archanist-*
 
 # Data dir: config.toml, state.toml, components/, log dir. Bind-mount
 # this from the host so state survives container replacement.
 WORKDIR /app/data
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/archanist"]
+ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/archanist"]
 CMD ["--help"]

@@ -2,10 +2,10 @@
 
 ## [0.1.1-SNAPSHOT] - Unreleased
 ### Added
-- N/A
+- Multi-platform support.
 
 ### Changed
-- N/A
+- Updated dependencies.
 
 ### Fixed
 - N/A

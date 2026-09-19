@@ -2,6 +2,11 @@
 target/
 Cargo.lock.bak
 
+# Allow the cross-compiled release binaries the Docker build copies in.
+!target/x86_64-unknown-linux-musl/release/archanist
+!target/aarch64-unknown-linux-musl/release/archanist
+!target/armv7-unknown-linux-musleabihf/release/archanist
+
 # Local state and logs
 state.toml
 logs/
