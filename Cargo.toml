@@ -1,6 +1,6 @@
 [package]
 name = "archanist"
-version = "0.1.2-SNAPSHOT"
+version = "0.1.2"
 authors = ["Michele Medori <michele.medori93@gmail.com>"]
 edition = "2024"
 license = "MIT"

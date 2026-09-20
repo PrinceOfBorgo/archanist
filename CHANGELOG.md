@@ -1,6 +1,7 @@
 # Changelog
 
-## [0.1.2-SNAPSHOT] - Unreleased
+## [0.1.2] - 2026-09-20
+### 🔧 Patch Release
 ### Added
 - `parse_text`: optional `version_filter` that keeps only lines whose captured semver is strictly newer than a reference version (`newer_than`). A non-semver reference (e.g. the `(none)` fresh-install sentinel) disables filtering so a first install still sees every row. Lets migration-selection recipes resolve correctly even when updating from a release absent from the reference table.
 
