@@ -48,6 +48,25 @@ pub struct ContainerRunSpec {
     pub pull: bool,
 }
 
+/// Everything needed to (re)create one long-lived service container via
+/// [`DockerClient::run_container`].
+pub struct ServiceSpec {
+    /// Container name.
+    pub name: String,
+    /// Image reference to run.
+    pub image: String,
+    /// `KEY=VALUE` environment entries.
+    pub env: Vec<String>,
+    /// Bind mounts in `host:container[:mode]` form.
+    pub volumes: Vec<String>,
+    /// User network to join (`--network`), if any.
+    pub network: Option<String>,
+    /// `--add-host` entries in `host:ip` form.
+    pub extra_hosts: Vec<String>,
+    /// Restart policy name (e.g. `unless-stopped`), if any.
+    pub restart_policy: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct DockerClient {
     client: Docker,
@@ -135,17 +154,25 @@ impl DockerClient {
         }
     }
 
-    pub async fn run_container(
-        &self,
-        name: &str,
-        image: &str,
-        env: Vec<String>,
-        volumes: Vec<String>,
-        restart_policy: Option<String>,
-    ) -> Result<String> {
+    pub async fn run_container(&self, spec: ServiceSpec) -> Result<String> {
+        let ServiceSpec {
+            name,
+            image,
+            env,
+            volumes,
+            network,
+            extra_hosts,
+            restart_policy,
+        } = spec;
         info!("creating container {name} from {image}");
         let host_config = HostConfig {
             binds: Some(volumes),
+            network_mode: network,
+            extra_hosts: if extra_hosts.is_empty() {
+                None
+            } else {
+                Some(extra_hosts)
+            },
             restart_policy: restart_policy.map(|p| RestartPolicy {
                 name: Some(parse_restart_policy(&p)),
                 maximum_retry_count: None,
@@ -153,13 +180,13 @@ impl DockerClient {
             ..Default::default()
         };
         let config = ContainerCreateBody {
-            image: Some(image.into()),
+            image: Some(image.clone()),
             env: Some(env),
             host_config: Some(host_config),
             ..Default::default()
         };
         let opts = CreateContainerOptions {
-            name: Some(name.into()),
+            name: Some(name.clone()),
             platform: String::new(),
         };
         let resp = self

@@ -2,13 +2,13 @@
 
 ## [0.1.3-SNAPSHOT] - Unreleased
 ### Added
-- N/A
+- `docker_swap`: optional `network` and `extra_hosts` fields, so a recreated service container can join a user network and resolve host aliases (e.g. `host.docker.internal:host-gateway`). Both are persisted in the rollback payload.
 
 ### Changed
 - N/A
 
 ### Fixed
-- N/A
+- `docker_swap`-managed containers could not reach services bound to the host (e.g. SurrealDB at `host.docker.internal`) on Linux, because the step had no way to add a `host-gateway` mapping. On startup the target would panic (exit 101) and Docker would restart-loop it. The `travel-rs` component now sets `extra_hosts = ["host.docker.internal:host-gateway"]` on its swap step.
 
 ## [0.1.2] - 2026-09-20
 ### 🔧 Patch Release

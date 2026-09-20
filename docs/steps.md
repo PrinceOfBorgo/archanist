@@ -519,23 +519,26 @@ Pull a new image and (re)create a target container.
 
 ### Body
 
-| Field            | Type          | Default            | Notes                                                                  |
-| ---------------- | ------------- | ------------------ | ---------------------------------------------------------------------- |
-| `image`          | string        | (required)         | Image reference. May include a `:tag` - if so, `tag` field is ignored. |
-| `container`      | string        | (required)         | Container name to stop/remove/create.                                  |
-| `tag`            | string        | `"latest"`         | Image tag. Appended to `image` unless the image already contains `:`.  |
-| `volumes`        | array<string> | `[]`               | Passed through as `-v` arguments - host-side paths.                    |
-| `env`            | array<string> | `[]`               | `KEY=VALUE` strings, passed as `-e`.                                   |
-| `restart_policy` | string        | `"unless-stopped"` | Container restart policy.                                              |
-| `self`           | bool          | `false`            | Marks the archanist's own container - see below.                       |
+| Field            | Type          | Default            | Notes                                                                              |
+| ---------------- | ------------- | ------------------ | ---------------------------------------------------------------------------------- |
+| `image`          | string        | (required)         | Image reference. May include a `:tag` - if so, `tag` field is ignored.             |
+| `container`      | string        | (required)         | Container name to stop/remove/create.                                              |
+| `tag`            | string        | `"latest"`         | Image tag. Appended to `image` unless the image already contains `:`.              |
+| `volumes`        | array<string> | `[]`               | Passed through as `-v` arguments - host-side paths.                                |
+| `env`            | array<string> | `[]`               | `KEY=VALUE` strings, passed as `-e`.                                               |
+| `network`        | string        | none               | User network the container joins (`--network`).                                    |
+| `extra_hosts`    | array<string> | `[]`               | `--add-host` entries in `host:ip` form (e.g. `host.docker.internal:host-gateway`). |
+| `restart_policy` | string        | `"unless-stopped"` | Container restart policy.                                                          |
+| `self`           | bool          | `false`            | Marks the archanist's own container - see below.                                   |
 
 ### Behavior
 
 - `apply` connects to the local Docker daemon, records the container's
   current image (for rollback), pulls the new image, stops and
   removes the container, then recreates it from the new image with
-  the specified `env` / `volumes` / `restart_policy`. The recorded
-  previous image is persisted as the step's rollback payload.
+  the specified `env` / `volumes` / `network` / `extra_hosts` /
+  `restart_policy`. The recorded previous image (and these settings)
+  are persisted as the step's rollback payload.
 - `rollback` pulls the previous image (from the payload), stops and
   removes the container, then recreates it from the previous image.
   If no previous image was recorded (fresh install), rollback logs a

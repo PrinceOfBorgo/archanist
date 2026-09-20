@@ -6,7 +6,7 @@
 //! `exit_after` so the pipeline stops cleanly and the new container
 //! image can take over.
 
-use crate::docker::DockerClient;
+use crate::docker::{DockerClient, ServiceSpec};
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ pub struct DockerSwap {
     tag: String,
     volumes: Vec<String>,
     env: Vec<String>,
+    network: Option<String>,
+    extra_hosts: Vec<String>,
     restart_policy: String,
     self_update: bool,
 }
@@ -32,6 +34,12 @@ struct DockerSwapRaw {
     volumes: Vec<String>,
     #[serde(default)]
     env: Vec<String>,
+    /// User network the container joins (`--network`).
+    #[serde(default)]
+    network: Option<String>,
+    /// `--add-host` entries in `host:ip` form (e.g. `host.docker.internal:host-gateway`).
+    #[serde(default)]
+    extra_hosts: Vec<String>,
     #[serde(default = "default_restart_policy")]
     restart_policy: String,
     /// Marks this as the archanist's own container. Signals exit_after so the
@@ -56,6 +64,8 @@ impl DockerSwap {
             tag: raw.tag,
             volumes: raw.volumes,
             env: raw.env,
+            network: raw.network,
+            extra_hosts: raw.extra_hosts,
             restart_policy: raw.restart_policy,
             self_update: raw.self_update,
         })
@@ -78,6 +88,10 @@ struct SwapPayload {
     previous_image: Option<String>,
     env: Vec<String>,
     volumes: Vec<String>,
+    #[serde(default)]
+    network: Option<String>,
+    #[serde(default)]
+    extra_hosts: Vec<String>,
     restart_policy: String,
 }
 
@@ -94,13 +108,15 @@ impl Step for DockerSwap {
             docker.stop_container(&self.container).await?;
             docker.remove_container(&self.container).await?;
             docker
-                .run_container(
-                    &self.container,
-                    &full_image,
-                    self.env.clone(),
-                    self.volumes.clone(),
-                    Some(self.restart_policy.clone()),
-                )
+                .run_container(ServiceSpec {
+                    name: self.container.clone(),
+                    image: full_image.clone(),
+                    env: self.env.clone(),
+                    volumes: self.volumes.clone(),
+                    network: self.network.clone(),
+                    extra_hosts: self.extra_hosts.clone(),
+                    restart_policy: Some(self.restart_policy.clone()),
+                })
                 .await?;
 
             let payload = SwapPayload {
@@ -108,6 +124,8 @@ impl Step for DockerSwap {
                 previous_image,
                 env: self.env.clone(),
                 volumes: self.volumes.clone(),
+                network: self.network.clone(),
+                extra_hosts: self.extra_hosts.clone(),
                 restart_policy: self.restart_policy.clone(),
             };
             let payload_val = toml::Value::try_from(&payload)
@@ -141,13 +159,15 @@ impl Step for DockerSwap {
             docker.stop_container(&pl.container).await?;
             docker.remove_container(&pl.container).await?;
             docker
-                .run_container(
-                    &pl.container,
-                    &prev,
-                    pl.env,
-                    pl.volumes,
-                    Some(pl.restart_policy),
-                )
+                .run_container(ServiceSpec {
+                    name: pl.container.clone(),
+                    image: prev,
+                    env: pl.env,
+                    volumes: pl.volumes,
+                    network: pl.network,
+                    extra_hosts: pl.extra_hosts,
+                    restart_policy: Some(pl.restart_policy),
+                })
                 .await?;
             Ok(())
         })
@@ -209,6 +229,8 @@ mod tests {
             previous_image: Some("nginx:1.24".into()),
             env: vec!["FOO=bar".into()],
             volumes: vec!["/data:/data".into()],
+            network: Some("appnet".into()),
+            extra_hosts: vec!["host.docker.internal:host-gateway".into()],
             restart_policy: "unless-stopped".into(),
         };
         let s = toml::to_string(&p).unwrap();
@@ -216,6 +238,8 @@ mod tests {
         assert_eq!(back.container, "web");
         assert_eq!(back.previous_image.as_deref(), Some("nginx:1.24"));
         assert_eq!(back.env, vec!["FOO=bar"]);
+        assert_eq!(back.network.as_deref(), Some("appnet"));
+        assert_eq!(back.extra_hosts, vec!["host.docker.internal:host-gateway"]);
     }
 
     #[test]
@@ -225,6 +249,8 @@ mod tests {
             previous_image: None,
             env: vec![],
             volumes: vec![],
+            network: None,
+            extra_hosts: vec![],
             restart_policy: "no".into(),
         };
         let s = toml::to_string(&p).unwrap();
