@@ -40,6 +40,7 @@ use crate::interp::Env;
 use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
 use anyhow::{Context, Result, bail};
 use regex::{Regex, RegexBuilder};
+use semver::Version;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -54,6 +55,11 @@ pub struct ParseTextStep {
     /// compiled with multiline mode so `^` / `$` match line boundaries.
     #[serde(default)]
     pub section: Option<Section>,
+    /// Optional per-line semver filter applied after section slicing and
+    /// before `strip` / extraction. Keeps only lines whose captured
+    /// version is strictly newer than a reference version.
+    #[serde(default)]
+    pub version_filter: Option<VersionFilter>,
     /// Regexes whose matches are removed from the working text before
     /// any [`Extract`] rule runs.
     #[serde(default)]
@@ -83,6 +89,29 @@ pub struct Section {
     /// `^## ` without `end` matching the section heading itself.
     #[serde(default)]
     pub end: Option<String>,
+}
+
+/// Optional per-line semver filter.
+///
+/// Every line matching `pattern` and capturing a semver in group `group`
+/// is KEPT only when that version is strictly newer than `newer_than`.
+/// Lines that don't match, or whose captured value isn't valid semver,
+/// pass through unchanged. When `newer_than` itself isn't valid semver
+/// (e.g. the `(none)` sentinel on a fresh install), the filter is a no-op
+/// and every line is kept - so a first install still sees every row.
+#[derive(Debug, Deserialize)]
+pub struct VersionFilter {
+    /// Multiline regex with a named capture group holding the version.
+    pub pattern: String,
+    /// Reference version; only lines strictly newer than this survive.
+    pub newer_than: String,
+    /// Name of the capture group holding the version. Defaults to `version`.
+    #[serde(default = "default_version_group")]
+    pub group: String,
+}
+
+fn default_version_group() -> String {
+    "version".to_string()
 }
 
 /// One extraction rule. The pattern must declare one or more named
@@ -171,6 +200,37 @@ fn apply_strip(text: &str, patterns: &[String]) -> Result<String> {
     Ok(out)
 }
 
+fn strip_v(tag: &str) -> &str {
+    tag.strip_prefix('v').unwrap_or(tag)
+}
+
+/// Keep only lines whose captured version is strictly newer than
+/// `filter.newer_than`. See [`VersionFilter`] for the full contract.
+fn apply_version_filter(text: &str, filter: &VersionFilter) -> Result<String> {
+    // A non-semver reference (e.g. the `(none)` fresh-install sentinel)
+    // disables filtering: every row is kept so a first install runs all.
+    let Ok(reference) = Version::parse(strip_v(filter.newer_than.trim())) else {
+        return Ok(text.to_string());
+    };
+    let re = build_multiline(&filter.pattern, "version_filter.pattern")?;
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let keep = match re.captures(line).and_then(|c| c.name(&filter.group)) {
+            Some(m) => match Version::parse(strip_v(m.as_str().trim())) {
+                Ok(v) => v > reference,
+                // Unparsable version cell: keep rather than silently drop.
+                Err(_) => true,
+            },
+            // No version on this line (header, separator, prose): keep.
+            None => true,
+        };
+        if keep {
+            out.push_str(line);
+        }
+    }
+    Ok(out)
+}
+
 fn run_extract(text: &str, rule: &Extract) -> Result<Vec<(String, String)>> {
     let re = Regex::new(&rule.pattern)
         .with_context(|| format!("invalid extract.pattern regex: {}", rule.pattern))?;
@@ -251,7 +311,12 @@ impl Step for ParseTextStep {
                     .with_context(|| format!("step '{}': section slicing failed", id))?,
                 None => raw,
             };
-            let cleaned = apply_strip(&scoped, &self.strip)
+            let filtered = match &self.version_filter {
+                Some(vf) => apply_version_filter(&scoped, vf)
+                    .with_context(|| format!("step '{}': version filter failed", id))?,
+                None => scoped,
+            };
+            let cleaned = apply_strip(&filtered, &self.strip)
                 .with_context(|| format!("step '{}': strip failed", id))?;
 
             let mut exported = Env::new();
@@ -418,6 +483,57 @@ Should be excluded.
     fn strip_removes_matched_spans() {
         let out = apply_strip("hi ~~`nope`~~ ok `keep`", &["~~`[^`]+`~~".to_string()]).unwrap();
         assert_eq!(out, "hi  ok `keep`");
+    }
+
+    fn vfilter(newer_than: &str) -> VersionFilter {
+        VersionFilter {
+            pattern: r"^\|\s*v(?<version>\d+\.\d+\.\d+)\s*\|".into(),
+            newer_than: newer_than.into(),
+            group: "version".into(),
+        }
+    }
+
+    const TABLE: &str = "| Version | Migrations |\n| ------- | ---------- |\n| v0.2.0  | `001` |\n| v0.3.2  | `009` |\n| v0.4.2  | `010` |\n";
+
+    #[test]
+    fn version_filter_keeps_only_newer_rows() {
+        let out = apply_version_filter(TABLE, &vfilter("0.3.2")).unwrap();
+        assert!(!out.contains("001"));
+        assert!(!out.contains("009"));
+        assert!(out.contains("010"));
+        // Header and separator (no version) are preserved.
+        assert!(out.contains("| Version | Migrations |"));
+    }
+
+    #[test]
+    fn version_filter_drops_all_when_current_is_newest() {
+        let out = apply_version_filter(TABLE, &vfilter("0.4.2")).unwrap();
+        assert!(!out.contains("001"));
+        assert!(!out.contains("009"));
+        assert!(!out.contains("010"));
+    }
+
+    #[test]
+    fn version_filter_rowless_current_drops_older_rows() {
+        // v0.4.0 has no row. Older migrations (001, 009) are dropped, but a
+        // newer row (v0.4.2 -> 010) is still correctly selected.
+        let out = apply_version_filter(TABLE, &vfilter("0.4.0")).unwrap();
+        assert!(!out.contains("001"));
+        assert!(!out.contains("009"));
+        assert!(out.contains("010"));
+    }
+
+    #[test]
+    fn version_filter_none_sentinel_keeps_everything() {
+        let out = apply_version_filter(TABLE, &vfilter("(none)")).unwrap();
+        assert_eq!(out, TABLE);
+    }
+
+    #[test]
+    fn version_filter_tolerates_v_prefixed_reference() {
+        let out = apply_version_filter(TABLE, &vfilter("v0.3.2")).unwrap();
+        assert!(out.contains("010"));
+        assert!(!out.contains("009"));
     }
 
     fn extract_rule(pattern: &str, prefix: &str) -> Extract {

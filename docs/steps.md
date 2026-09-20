@@ -111,11 +111,11 @@ Fetch a file over HTTP into a target path.
 
 ### Body
 
-| Field  | Type   | Default    | Notes                                                                                 |
-| ------ | ------ | ---------- | ------------------------------------------------------------------------------------- |
-| `url`  | string | (required) | HTTP or HTTPS URL. Any status ≠ 2xx fails the step.                                   |
-| `dest` | string | (required) | Local path to write. Missing parent directories are created. Existing files replaced. |
-| `backup` | bool | `true` | Snapshot `dest` before overwriting so `rollback` can restore it (or delete a freshly-downloaded file). Set `false` to opt out. |
+| Field    | Type   | Default    | Notes                                                                                                                          |
+| -------- | ------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `url`    | string | (required) | HTTP or HTTPS URL. Any status ≠ 2xx fails the step.                                                                            |
+| `dest`   | string | (required) | Local path to write. Missing parent directories are created. Existing files replaced.                                          |
+| `backup` | bool   | `true`     | Snapshot `dest` before overwriting so `rollback` can restore it (or delete a freshly-downloaded file). Set `false` to opt out. |
 
 ### Behavior
 
@@ -184,11 +184,11 @@ overwritten.
 
 ### Body
 
-| Field  | Type   | Default    | Notes                                                                         |
-| ------ | ------ | ---------- | ----------------------------------------------------------------------------- |
-| `src`  | string | (required) | Source path. Can be a file or a directory.                                    |
-| `dest` | string | (required) | Destination path. If `src` is a directory, `dest` becomes its recursive copy. |
-| `backup` | bool | `true` | Snapshot every destination path this step writes before writing it, so `rollback` can restore overwritten files and delete newly-created ones. Set `false` to opt out. |
+| Field    | Type   | Default    | Notes                                                                                                                                                                  |
+| -------- | ------ | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src`    | string | (required) | Source path. Can be a file or a directory.                                                                                                                             |
+| `dest`   | string | (required) | Destination path. If `src` is a directory, `dest` becomes its recursive copy.                                                                                          |
+| `backup` | bool   | `true`     | Snapshot every destination path this step writes before writing it, so `rollback` can restore overwritten files and delete newly-created ones. Set `false` to opt out. |
 
 ### Behavior
 
@@ -218,11 +218,11 @@ so the target's comments and key ordering are preserved.
 
 ### Body
 
-| Field    | Type   | Default    | Notes                                             |
-| -------- | ------ | ---------- | ------------------------------------------------- |
-| `target` | string | (required) | Path to the TOML file to modify in place.         |
-| `patch`  | string | (required) | Path to the TOML file whose values are merged in. |
-| `backup` | bool | `true` | Snapshot `target` before writing the merged result so `rollback` can restore the pre-merge file. Set `false` to opt out. |
+| Field    | Type   | Default    | Notes                                                                                                                    |
+| -------- | ------ | ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `target` | string | (required) | Path to the TOML file to modify in place.                                                                                |
+| `patch`  | string | (required) | Path to the TOML file whose values are merged in.                                                                        |
+| `backup` | bool   | `true`     | Snapshot `target` before writing the merged result so `rollback` can restore the pre-merge file. Set `false` to opt out. |
 
 ### Behavior
 
@@ -252,12 +252,13 @@ baked-in knowledge of any format.
 
 ### Body
 
-| Field     | Type           | Default    | Notes                                                                      |
-| --------- | -------------- | ---------- | -------------------------------------------------------------------------- |
-| `file`    | string (path)  | (required) | Path to the input file. Relative paths resolve against `base_dir`.         |
-| `section` | table          | none       | Region bounds - see below.                                                 |
-| `strip`   | array<string\> | `[]`       | Regexes whose matches are removed from the working text before extraction. |
-| `extract` | array<table\>  | (required) | One or more extraction rules - at least one is required.                   |
+| Field            | Type           | Default    | Notes                                                                       |
+| ---------------- | -------------- | ---------- | --------------------------------------------------------------------------- |
+| `file`           | string (path)  | (required) | Path to the input file. Relative paths resolve against `base_dir`.          |
+| `section`        | table          | none       | Region bounds - see below.                                                  |
+| `version_filter` | table          | none       | Per-line semver filter applied after `section`, before `strip` - see below. |
+| `strip`          | array<string\> | `[]`       | Regexes whose matches are removed from the working text before extraction.  |
+| `extract`        | array<table\>  | (required) | One or more extraction rules - at least one is required.                    |
 
 ### `section`
 
@@ -270,6 +271,29 @@ mode so `^` / `$` match line boundaries.
 | `start`       | Drop everything before the FIRST match (the match itself is kept). Errors if the regex doesn't match.                          |
 | `start_after` | Like `start`, but the cursor is moved PAST the match. Silently no-ops when the regex doesn't match.                            |
 | `end`         | In the remaining text, drop from the FIRST match onward (the match itself is dropped). Searched starting AFTER the first line. |
+
+### `version_filter`
+
+Optional per-line semver filter, applied after `section` slicing and
+before `strip`. It keeps only lines whose captured version is strictly
+newer than a reference version - handy for selecting just the
+migrations published since the currently installed release.
+
+| Field        | Type   | Default     | Notes                                                                                       |
+| ------------ | ------ | ----------- | ------------------------------------------------------------------------------------------- |
+| `pattern`    | string | (required)  | Multiline regex with a named capture group holding the version.                             |
+| `newer_than` | string | (required)  | Reference version; only lines strictly newer than this survive. A leading `v` is tolerated. |
+| `group`      | string | `"version"` | Name of the capture group holding the version.                                              |
+
+Rules:
+
+- A line matching `pattern` and capturing a valid semver is kept only
+  when that version is **strictly newer** than `newer_than`.
+- Lines that don't match `pattern`, or whose captured value isn't valid
+  semver (headers, separators, prose), pass through unchanged.
+- When `newer_than` itself isn't valid semver - e.g. the `(none)`
+  sentinel on a fresh install - the filter is a no-op and every line is
+  kept, so a first install still sees every row.
 
 ### `extract`
 
@@ -288,11 +312,11 @@ becomes one exported variable.
 
 ### Behavior
 
-- `apply` reads the file, applies `section` bounds, then `strip`
-  patterns, then each `[[extract]]` rule in order. Each named capture
-  group in each rule is collected across all matches, optionally
-  deduped and sorted, joined by `join`, and published as
-  `${<prefix><group_name>}` for later steps.
+- `apply` reads the file, applies `section` bounds, then the optional
+  `version_filter`, then `strip` patterns, then each `[[extract]]` rule
+  in order. Each named capture group in each rule is collected across
+  all matches, optionally deduped and sorted, joined by `join`, and
+  published as `${<prefix><group_name>}` for later steps.
 - `rollback` - no-op.
 - `is_satisfied` - default `false`.
 
@@ -316,6 +340,29 @@ sort    = true
 Later steps consume the result via `${vars.migrations}` - a
 newline-separated list of migration filenames.
 
+### Example - select only migrations newer than the installed version
+
+```toml
+[[steps]]
+id   = "select_migrations"
+type = "parse_text"
+file = "${vars.bundle_dir}/MIGRATIONS.md"
+section = { start = "## Migration Reference", end = "^## " }
+version_filter = { pattern = "^\\|\\s*v(?<version>\\d+\\.\\d+\\.\\d+)\\s*\\|", newer_than = "${current_version}" }
+
+[[steps.extract]]
+pattern = "`(?<migrations>[^`]+\\.sql)`"
+prefix  = "vars."
+dedupe  = true
+sort    = true
+```
+
+Rows for versions at or below `${current_version}` are dropped before
+extraction, so only migrations published since the installed release
+are selected. On a fresh install where `${current_version}` is the
+`(none)` sentinel, the filter is inert and every migration is picked
+up.
+
 ---
 
 ## <a id="db_migrate"></a> `db_migrate`
@@ -330,23 +377,23 @@ host subprocess or, when `image` is set, inside a throwaway container.
 
 ### Body
 
-| Field              | Type                    | Default        | Notes                                                                                       |
-| ------------------ | ----------------------- | -------------- | ------------------------------------------------------------------------------------------- |
-| `glob`             | string                  | none           | Filesystem glob for migration files. Mutually exclusive with `files`.                       |
-| `files`            | array<string> \| string | none           | Explicit list, or a single string split on `split`. Mutually exclusive with `glob`.         |
-| `split`            | string                  | `"\n"`         | Used to split `files` when it's a delimited string. Whitespace is trimmed; empties dropped. |
-| `base`             | string                  | `ctx.base_dir` | Prefix for non-absolute paths in `files` / `glob`.                                          |
-| `command`          | array<string>           | (required)     | argv template. Must be non-empty.                                                           |
-| `rollback_command` | array<string>           | none           | argv template for reverting a single migration by stem. See below.                          |
-| `backup_command`   | array<string>           | none           | argv run once BEFORE any migration to snapshot the database. `{backup}` placeholder. See below. |
+| Field              | Type                    | Default        | Notes                                                                                                                                                                            |
+| ------------------ | ----------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `glob`             | string                  | none           | Filesystem glob for migration files. Mutually exclusive with `files`.                                                                                                            |
+| `files`            | array<string> \| string | none           | Explicit list, or a single string split on `split`. Mutually exclusive with `glob`.                                                                                              |
+| `split`            | string                  | `"\n"`         | Used to split `files` when it's a delimited string. Whitespace is trimmed; empties dropped.                                                                                      |
+| `base`             | string                  | `ctx.base_dir` | Prefix for non-absolute paths in `files` / `glob`.                                                                                                                               |
+| `command`          | array<string>           | (required)     | argv template. Must be non-empty.                                                                                                                                                |
+| `rollback_command` | array<string>           | none           | argv template for reverting a single migration by stem. See below.                                                                                                               |
+| `backup_command`   | array<string>           | none           | argv run once BEFORE any migration to snapshot the database. `{backup}` placeholder. See below.                                                                                  |
 | `restore`          | array<table\>           | `[]`           | Ordered restore runs executed on rollback in place of `rollback_command`. Each has a `command` (with `{backup}`) and optional `stdin`. Takes precedence over `rollback_command`. |
-| `cwd`              | string                  | none           | Working directory for host-mode `command` / `rollback_command` (and the container workdir when `workdir` is unset). |
-| `image`            | string                  | none           | Run `command` / `backup_command` / `restore` commands as the argv of a throwaway container from this image instead of as host subprocesses. |
-| `network`          | string                  | none           | User network the helper container joins (`--network`). Only with `image`.                   |
-| `extra_hosts`      | array<string>           | `[]`           | `--add-host` entries for the helper container. Only with `image`.                           |
-| `binds`            | array<string>           | `[]`           | Bind mounts for the helper container in `host:container[:mode]` form. Only with `image`.     |
-| `workdir`          | string                  | none           | Working directory inside the helper container. Only with `image`.                           |
-| `pull`             | bool                    | `true`         | Pull `image` before each run. Only with `image`.                                            |
+| `cwd`              | string                  | none           | Working directory for host-mode `command` / `rollback_command` (and the container workdir when `workdir` is unset).                                                              |
+| `image`            | string                  | none           | Run `command` / `backup_command` / `restore` commands as the argv of a throwaway container from this image instead of as host subprocesses.                                      |
+| `network`          | string                  | none           | User network the helper container joins (`--network`). Only with `image`.                                                                                                        |
+| `extra_hosts`      | array<string>           | `[]`           | `--add-host` entries for the helper container. Only with `image`.                                                                                                                |
+| `binds`            | array<string>           | `[]`           | Bind mounts for the helper container in `host:container[:mode]` form. Only with `image`.                                                                                         |
+| `workdir`          | string                  | none           | Working directory inside the helper container. Only with `image`.                                                                                                                |
+| `pull`             | bool                    | `true`         | Pull `image` before each run. Only with `image`.                                                                                                                                 |
 
 ### Step-local placeholders
 

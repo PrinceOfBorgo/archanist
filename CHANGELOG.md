@@ -2,7 +2,7 @@
 
 ## [0.1.2-SNAPSHOT] - Unreleased
 ### Added
-- N/A
+- `parse_text`: optional `version_filter` that keeps only lines whose captured semver is strictly newer than a reference version (`newer_than`). A non-semver reference (e.g. the `(none)` fresh-install sentinel) disables filtering so a first install still sees every row. Lets migration-selection recipes resolve correctly even when updating from a release absent from the reference table.
 
 ### Changed
 - N/A
@@ -23,11 +23,8 @@
 
 ## [0.1.0] - 2026-09-14
 ### 🔧 Patch Release
-
 ### Added
-
-- Declarative component recipes with a step pipeline runner, `${...}`
-  interpolation, and per-component `[vars]`.
+- Declarative component recipes with a step pipeline runner, `${...}` interpolation, and per-component `[vars]`.
 - Built-in steps:
   - `shell` - run an arbitrary command (escape hatch).
   - `download` - fetch a file over HTTP into a target path.
@@ -39,16 +36,12 @@
   - `db_migrate` - forward-only, driver-agnostic migration runner.
   - `docker_swap` - pull a new image and (re)create the target container.
 - Release sources: GitHub, GHCR, Docker Hub, and pinned versions.
-- Backup-based rollback for `copy_files`, `download`, and `config_merge`, plus
-  `backup_command` / `restore_command` for `db_migrate`.
-- `init`, `config`, `status`, `check`, `update`, `rollback`, `unblock`, and
-  `step-kinds` CLI commands with persisted state and a version blocklist.
+- Backup-based rollback for `copy_files`, `download`, and `config_merge`, plus `backup_command` / `restore_command` for `db_migrate`.
+- `init`, `config`, `status`, `check`, `update`, `rollback`, `unblock`, and `step-kinds` CLI commands with persisted state and a version blocklist.
 - Dockerfile for running archanist as a container.
 
 ### Changed
-
 - N/A
 
 ### Fixed
-
 - N/A
