@@ -1,6 +1,7 @@
 # Changelog
 
-## [0.1.3-SNAPSHOT] - Unreleased
+## [0.1.3] - 2026-09-20
+### 🔧 Patch Release
 ### Added
 - `docker_swap`: optional `network` and `extra_hosts` fields, so a recreated service container can join a user network and resolve host aliases (e.g. `host.docker.internal:host-gateway`). Both are persisted in the rollback payload.
 
