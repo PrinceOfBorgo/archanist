@@ -1,6 +1,7 @@
 # Changelog
 
-## [0.1.4-SNAPSHOT] - Unreleased
+## [0.1.4] - 2026-11-04
+### 🔧 Patch Release
 ### Added
 - `archanist sandbox run|rollback|reset <component>`: rehearse a component's update in a throwaway environment declared by an optional `[sandbox]` section in its recipe - peer service containers (with healthchecks) on a dedicated network, one-time baseline `setup` steps, `[sandbox.vars]` / `[sandbox.env]` overrides, per-step `[sandbox.override.<id>]` patches, and `skip_steps`. State and artifacts live under `<base_dir>/sandbox/<component>/`, never in the real state. A non-skipped `docker_swap` step must override `container`, so a sandbox can't replace the real container.
 
