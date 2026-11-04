@@ -1,5 +1,11 @@
 # Archanist
 
+[![Github Link][github badge]][github link]
+[![Cargo Build & Test][build & test badge]][build & test link]
+[![Release][release badge]][release link]
+[![Codecov][codecov badge]][codecov link]
+[![Buy Me A Coffee][bmc badge]][bmc link]
+
 Archanist is a small, application-agnostic engine that runs a **step
 pipeline** to install or upgrade a service, records what it did on
 disk so partial failures can be retried or rolled back, and knows how
@@ -74,3 +80,18 @@ their release artifact - see [authoring.md](docs/authoring.md).
 ## License
 
 MIT - see [LICENSE](LICENSE).
+
+[github badge]: https://img.shields.io/badge/github-PrinceOfBorgo%2Farchanist-8da0cb?logo=github&logoColor=white
+[github link]: https://github.com/PrinceOfBorgo/archanist
+
+[build & test badge]: https://img.shields.io/github/actions/workflow/status/PrinceOfBorgo/archanist/ci.yml?logo=githubactions&logoColor=white&label=Cargo%20Build%20%26%20Test
+[build & test link]: https://github.com/PrinceOfBorgo/archanist/actions/workflows/ci.yml
+
+[release badge]: https://img.shields.io/github/actions/workflow/status/PrinceOfBorgo/archanist/release.yml?logo=githubactions&logoColor=white&label=Release
+[release link]: https://github.com/PrinceOfBorgo/archanist/actions/workflows/release.yml
+
+[codecov badge]: https://img.shields.io/codecov/c/github/PrinceOfBorgo/archanist?logo=codecov&logoColor=white
+[codecov link]: https://codecov.io/gh/PrinceOfBorgo/archanist
+
+[bmc badge]: https://img.shields.io/badge/Buy%20Me%20A%20Coffee-Donate-FFDD00?logo=buymeacoffee&logoColor=white
+[bmc link]: https://coff.ee/princeofborgo
