@@ -116,6 +116,7 @@ impl Step for DockerSwap {
                     network: self.network.clone(),
                     extra_hosts: self.extra_hosts.clone(),
                     restart_policy: Some(self.restart_policy.clone()),
+                    ..Default::default()
                 })
                 .await?;
 
@@ -167,6 +168,7 @@ impl Step for DockerSwap {
                     network: pl.network,
                     extra_hosts: pl.extra_hosts,
                     restart_policy: Some(pl.restart_policy),
+                    ..Default::default()
                 })
                 .await?;
             Ok(())

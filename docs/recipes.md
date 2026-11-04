@@ -7,6 +7,7 @@ covers:
 - Component recipe files (one per component under `components/`).
 - The `[vars]` block and `${...}` interpolation syntax.
 - Release sources.
+- The optional `[sandbox]` section.
 - The `schema` versioning contract.
 
 For the field-by-field reference of every step kind, see
@@ -279,6 +280,152 @@ Semver comparison is used when both `current_version` and the returned
 latest are valid semver. Otherwise, plain string inequality decides
 "newer" - meaning any string change is considered an update. Mix
 semver and non-semver at your own risk.
+
+---
+
+## <a id="sandbox"></a> `[sandbox]`
+
+Optional. Describes a throwaway environment where
+`archanist sandbox run <component>` rehearses the real update against
+the real latest release without touching the live deployment:
+
+1. Create `network` (if set) and start every `[[sandbox.services]]`
+   container on it, waiting for its healthcheck. Existing containers
+   are started, not recreated.
+2. On the first run only (no sandbox state yet), run the
+   `[[sandbox.setup]]` steps to install the baseline that the update
+   starts from, then record `current_version = baseline_version`.
+3. Run the component's `[[steps]]` through the normal `update` flow,
+   minus `skip_steps`, with each `[sandbox.override.<id>]` table merged
+   over the matching step body and `[sandbox.vars]` merged over
+   `[vars]`. The sandbox blocklist is cleared first, so a failed
+   rehearsal can be retried.
+4. Print a summary (container images, resulting version).
+
+The sandbox keeps its own `state.toml`, migration logs and backups
+under `<base_dir>/sandbox/<component>/`. `archanist sandbox rollback`
+undoes the last sandbox attempt; `archanist sandbox reset` removes the
+service containers, any containers listed in `cleanup_containers`, the
+sandbox network, and the `<base_dir>/sandbox/<component>/` directory.
+
+```toml
+[sandbox]
+baseline_version   = "1.4.0"            # unset = rehearse a fresh install
+network            = "myapp-sandbox"
+skip_steps         = ["notify_ops"]
+cleanup_containers = []                 # extra containers removed on reset
+
+# Shadows ${env.NAME} lookups (credentials, endpoints, ...).
+[sandbox.env]
+MYAPP_DB_URL = "postgres://app:app@myapp-sandbox-db:5432/app"
+
+# Overrides [vars] entries; redirect every path into the sandbox dir.
+[sandbox.vars]
+install_dir      = "${sandbox.dir}/myapp"
+install_dir_host = "${vars.host_data_dir}/sandbox/${component}/myapp"
+
+# Keys merged over the step with that id. Required for every non-skipped
+# docker_swap step (at least `container`), so the real container is safe.
+[sandbox.override.swap]
+container      = "myapp-sandbox"
+network        = "${sandbox.network}"
+restart_policy = "no"
+
+[[sandbox.services]]
+name        = "myapp-sandbox-db"
+image       = "postgres:16"
+env         = ["POSTGRES_USER=app", "POSTGRES_PASSWORD=app"]
+healthcheck = { test = ["CMD", "pg_isready"], interval_secs = 2, retries = 15 }
+
+[[sandbox.services]]
+name  = "myapp-sandbox"                # the "old" deployment the swap replaces
+image = "ghcr.io/example/myapp:v${sandbox.baseline_version}"
+
+# Any step kind. Here ${version} = baseline_version (not the release target).
+[[sandbox.setup]]
+id   = "baseline_schema"
+type = "db_migrate"
+glob = "*.sql"
+base = "${sandbox.dir}/baseline/migrations"
+command = ["psql", "${env.MYAPP_DB_URL}", "-f", "{file}"]
+```
+
+Extra interpolation variables, available in `[sandbox.vars]`,
+overrides, services and setup steps:
+
+| Name                          | Value                                                         |
+| ----------------------------- | ------------------------------------------------------------- |
+| `${sandbox.dir}`              | `<base_dir>/sandbox/<component>` (archanist's own path view). |
+| `${sandbox.network}`          | `network`, or empty.                                          |
+| `${sandbox.baseline_version}` | `baseline_version`, or empty.                                 |
+
+### Services
+
+Each `[[sandbox.services]]` entry is a long-lived container the
+rehearsal needs alongside the component (a database, the "old"
+deployment the swap replaces, ...). Fields:
+
+| Field         | Notes                                                                                                                        |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `name`        | Required. Container name. Also used by `reset` to remove it.                                                                 |
+| `image`       | Required. Pulled only when the container is created.                                                                         |
+| `command`     | Optional argv. Empty keeps the image's default command.                                                                      |
+| `env`         | Optional `KEY=VALUE` entries.                                                                                                |
+| `volumes`     | Optional mounts in `source:target[:mode]` form (host paths or named volumes).                                                |
+| `healthcheck` | Optional Docker healthcheck: `test` (argv), `interval_secs` (default 2), `timeout_secs` (default 2), `retries` (default 15). |
+
+Services join `network` and always run with restart policy `no`, so a
+crashing service doesn't loop. A service that already exists is started
+as is, not recreated, so a database keeps its data between runs. When
+`healthcheck` is set, `sandbox run` waits until Docker reports the
+container healthy before continuing. It fails if the container turns
+unhealthy or isn't healthy within about `interval_secs × (retries + 1)`
+seconds plus 30 seconds of grace.
+
+### Setup steps
+
+`[[sandbox.setup]]` entries are ordinary steps: any `type` from
+[steps.md](steps.md) works, with the same fields. They differ from
+`[[steps]]` in three ways:
+
+- **They see the baseline as `${version}`.** During setup, `${version}`
+  is `baseline_version` (not the release target) and
+  `${current_version}` is `(none)`. That lets setup reuse the same URL
+  and path patterns as the real pipeline to fetch the baseline. The
+  same string, e.g. `bundle-v${version}.zip`, therefore resolves
+  differently during setup and during the update. Use
+  `${sandbox.baseline_version}` when you want to name the baseline
+  explicitly.
+- **They run once.** Setup only runs when the sandbox has no state for
+  the component. If it fails, nothing is recorded and the next
+  `sandbox run` retries it. After it succeeds, editing setup steps has
+  no effect until `archanist sandbox reset <component>`.
+- **They aren't rolled back.** Setup isn't part of an update attempt, so
+  `sandbox rollback` never undoes it. Use `reset` to start over.
+
+Setup step ids must not match any `[[steps]]` id. Both lists keep
+per-step files (such as `db_migrate`'s applied-migrations log) in the
+same sandbox directory, keyed by id.
+
+### Validation
+
+The `[sandbox]` section is checked when the recipe loads, so mistakes
+fail before anything runs:
+
+- Unknown keys in `[sandbox]`, a service, or a `healthcheck` are
+  rejected, so a misspelled `override` can't silently leave a step
+  pointed at production. The tables inside `[sandbox.override.<id>]`
+  and the bodies of setup steps are checked only by the step itself,
+  like any `[[steps]]` body.
+- Every id in `skip_steps` and every `[sandbox.override.<id>]` must
+  name an existing step, and an override can't change `id` or `type`.
+- Every `docker_swap` step that isn't skipped must override
+  `container`, so the rehearsal can never replace the live container.
+- `network`, if set, must not be empty.
+
+When archanist runs as a container, `${sandbox.dir}` is a container
+path; hand helper containers its host equivalent (see
+[authoring.md](authoring.md#container-view-vs-host-view-paths)).
 
 ---
 

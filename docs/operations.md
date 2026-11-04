@@ -43,6 +43,9 @@ All commands accept `--config <path>` (default `config.toml`) and
 | `archanist update [<component>]`          | Check for updates and apply them if a newer version is available. Aborts on the first step failure; auto-blocks the failed version.                         |
 | `archanist rollback <component>`          | Walk the last attempt's completed steps in reverse and invoke each step's `rollback` handler.                                                               |
 | `archanist unblock <component> <version>` | Remove `<version>` from the component's blocklist so `update` can retry it.                                                                                 |
+| `archanist sandbox run <component>`       | Rehearse the update in the component's `[sandbox]` (see [recipes.md](recipes.md#sandbox)): start services, lay down the baseline once, run the update.     |
+| `archanist sandbox rollback <component>`  | Roll back the last sandbox attempt.                                                                                                                         |
+| `archanist sandbox reset <component>`     | Remove the sandbox's containers, network, and `<base_dir>/sandbox/<component>/` directory.                                                                  |
 | `archanist step-kinds`                    | List all built-in step type names.                                                                                                                          |
 
 ### `update` - pipeline lifecycle

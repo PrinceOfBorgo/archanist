@@ -3,6 +3,7 @@ mod docker;
 mod interp;
 mod pipeline;
 mod release;
+mod sandbox;
 mod state;
 mod steps;
 mod tui;
@@ -88,8 +89,23 @@ enum Commands {
     },
     /// Clear a version from the blocklist so it can be installed again.
     Unblock { component: String, version: String },
+    /// Rehearse a component's update in the throwaway environment defined by its `[sandbox]` section.
+    Sandbox {
+        #[command(subcommand)]
+        action: SandboxAction,
+    },
     /// List all built-in step kinds.
     StepKinds,
+}
+
+#[derive(Subcommand)]
+enum SandboxAction {
+    /// Start the sandbox services, lay down the baseline (first run only), then run the update.
+    Run { component: String },
+    /// Roll back the last sandbox update attempt.
+    Rollback { component: String },
+    /// Remove the sandbox containers, network, and working directory.
+    Reset { component: String },
 }
 
 fn main() -> Result<()> {
@@ -154,8 +170,11 @@ async fn run_async(cli: Cli) -> Result<()> {
             let state_path = cfg.state_path();
             let mut state = state::ArchanistState::load(&state_path)?;
             let registry = std::sync::Arc::new(steps::builtin_registry());
-            run_rollback(&cfg, &mut state, component, &registry).await?;
+            let result =
+                run_rollback(&cfg, &mut state, component, &registry, &interp::Env::new()).await;
+            // Persist steps already rolled back even if a later one failed.
             state.save(&state_path)?;
+            result?;
         }
         Commands::Update { component } => {
             let state_path = cfg.state_path();
@@ -167,6 +186,7 @@ async fn run_async(cli: Cli) -> Result<()> {
                 component.as_deref(),
                 &state_path,
                 &registry,
+                &interp::Env::new(),
             )
             .await;
             state.save(&state_path)?;
@@ -177,6 +197,18 @@ async fn run_async(cli: Cli) -> Result<()> {
             let mut state = state::ArchanistState::load(&state_path)?;
             run_unblock(&mut state, component, version)?;
             state.save(&state_path)?;
+        }
+        Commands::Sandbox { action } => {
+            let registry = std::sync::Arc::new(steps::builtin_registry());
+            match action {
+                SandboxAction::Run { component } => {
+                    sandbox::run(&cfg, component, &registry).await?
+                }
+                SandboxAction::Rollback { component } => {
+                    sandbox::rollback(&cfg, component, &registry).await?
+                }
+                SandboxAction::Reset { component } => sandbox::reset(&cfg, component).await?,
+            }
         }
         Commands::StepKinds => {
             let registry = steps::builtin_registry();
@@ -426,6 +458,7 @@ async fn run_rollback(
     state: &mut state::ArchanistState,
     component: &str,
     registry: &std::sync::Arc<steps::StepRegistry>,
+    extra_env: &interp::Env,
 ) -> Result<()> {
     let comp = cfg.components.get(component).with_context(|| {
         format!(
@@ -463,9 +496,20 @@ async fn run_rollback(
 
     let is_self_update = cfg.self_component.as_deref() == Some(component);
 
-    // Rollback consults each step's payload snapshot rather than its
-    // configured template, so we build steps from raw (un-interpolated)
-    // config and never spin up a pipeline runner here.
+    // Rebuild the env the attempt ran with, minus vars published by steps
+    // (those stay as literal `${...}`; rollbacks read them from payloads).
+    let mut base_env = extra_env.clone();
+    base_env.insert("version".into(), attempt.target_version.clone());
+    base_env.insert(
+        "current_version".into(),
+        attempt
+            .current_version
+            .clone()
+            .unwrap_or_else(|| "(none)".into()),
+    );
+    base_env.insert("component".into(), component.to_string());
+    let env = interp::expand_component_vars(&base_env, &comp.vars);
+
     for step_cfg in comp.steps.iter().rev() {
         if !done_ids.contains(&step_cfg.id) {
             continue;
@@ -478,7 +522,7 @@ async fn run_rollback(
         let finished_at = run.finished_at;
 
         let step = registry
-            .build_raw(step_cfg)
+            .build_lenient(step_cfg, &env)
             .with_context(|| format!("failed to build step '{}'", step_cfg.id))?;
         let ctx = steps::StepCtx {
             step_id: step_cfg.id.clone(),
@@ -528,6 +572,7 @@ async fn run_update(
     filter: Option<&str>,
     state_path: &Path,
     registry: &std::sync::Arc<steps::StepRegistry>,
+    extra_env: &interp::Env,
 ) -> Result<()> {
     let names: Vec<String> = if let Some(name) = filter {
         if !cfg.components.contains_key(name) {
@@ -593,7 +638,7 @@ async fn run_update(
         let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
         let pipeline = pipeline::Pipeline::build(
             name,
-            comp,
+            comp.steps.clone(),
             is_self_update,
             cfg.base_dir.clone(),
             registry.clone(),
@@ -601,7 +646,7 @@ async fn run_update(
         let component_name = name.clone();
 
         // Seed the pipeline env with built-in vars and per-component `[vars]`
-        let mut base_env = interp::Env::new();
+        let mut base_env = extra_env.clone();
         base_env.insert("version".into(), latest.clone());
         base_env.insert("current_version".into(), current.clone());
         base_env.insert("component".into(), name.clone());

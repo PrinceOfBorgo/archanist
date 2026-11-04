@@ -131,6 +131,10 @@ pub struct RestoreRun {
     /// `{backup}` substitution) - used e.g. to send DDL to a SQL shell.
     #[serde(default)]
     pub stdin: Option<String>,
+    /// Image for this run only (e.g. `busybox` to patch the dump).
+    /// Defaults to the step's `image`.
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 fn default_split() -> String {
@@ -188,7 +192,17 @@ impl DbMigrateStep {
     /// Run one command, dispatching to a host subprocess or - when
     /// `image` is set - to a throwaway helper container.
     async fn exec(&self, id: &str, argv: &[String], stdin: Option<&str>) -> Result<()> {
-        match &self.image {
+        self.exec_in(self.image.as_deref(), id, argv, stdin).await
+    }
+
+    async fn exec_in(
+        &self,
+        image: Option<&str>,
+        id: &str,
+        argv: &[String],
+        stdin: Option<&str>,
+    ) -> Result<()> {
+        match image {
             None => run(argv, self.cwd.as_deref(), id).await,
             Some(image) => {
                 let docker = crate::docker::DockerClient::connect()?;
@@ -196,7 +210,7 @@ impl DbMigrateStep {
                     .run_to_completion(
                         id,
                         crate::docker::ContainerRunSpec {
-                            image: image.clone(),
+                            image: image.to_string(),
                             cmd: argv.to_vec(),
                             env: Vec::new(),
                             binds: self.binds.clone(),
@@ -423,7 +437,8 @@ impl Step for DbMigrateStep {
                 info!("[{}] restoring database from snapshot", id);
                 for r in &self.restore {
                     let argv = render_backup_argv(&r.command, Path::new(dir));
-                    self.exec(id, &argv, r.stdin.as_deref()).await?;
+                    let image = r.image.as_deref().or(self.image.as_deref());
+                    self.exec_in(image, id, &argv, r.stdin.as_deref()).await?;
                 }
                 // The restore reverted every migration at once; drop them
                 // all from the on-disk applied log.

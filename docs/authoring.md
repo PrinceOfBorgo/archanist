@@ -232,8 +232,10 @@ Before shipping:
 2. **Dry check**: `archanist check <component>` exercises your
    `[release]` block and probes `is_satisfied` for each step. Confirm
    the release source resolves and the step count looks right.
-3. **Full run in a sandbox**: point archanist at a scratch host_data_dir,
-   run `archanist update <component>`, verify each step's effect.
+3. **Full run in a sandbox**: declare a `[sandbox]` section (see
+   [recipes.md](recipes.md#sandbox)) and run
+   `archanist sandbox run <component>`; verify each step's effect,
+   then `archanist sandbox reset <component>`.
 4. **Rollback**: run `archanist rollback <component>` and check that
    every reversible step actually reversed itself. `db_migrate`
    should show the down-migrations executing in reverse order (or, if

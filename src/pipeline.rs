@@ -9,7 +9,7 @@
 //! can update the persisted [`crate::state::UpdateAttempt`] as the run
 //! progresses.
 
-use crate::config::{ComponentConfig, StepConfig};
+use crate::config::StepConfig;
 use crate::interp::Env;
 use crate::steps::{StepCtx, StepOutcome, StepRegistry};
 use anyhow::{Context, Result};
@@ -41,12 +41,11 @@ pub enum StepEvent<'a> {
 impl Pipeline {
     pub fn build(
         name: &str,
-        cfg: &ComponentConfig,
+        step_configs: Vec<StepConfig>,
         is_self_update: bool,
         base_dir: PathBuf,
         registry: Arc<StepRegistry>,
     ) -> Self {
-        let step_configs = cfg.steps.clone();
         debug!(
             "built pipeline for '{}' with {} step(s) (self_update={})",
             name,

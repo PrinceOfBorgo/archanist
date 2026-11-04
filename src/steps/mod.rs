@@ -157,15 +157,17 @@ impl StepRegistry {
         factory(body).with_context(|| format!("step '{}': failed to build", cfg.id))
     }
 
-    /// Build the step for `cfg` without touching its body - used by the
-    /// rollback path, which consults each step's payload snapshot
-    /// rather than its (possibly stale) templated config.
-    pub fn build_raw(&self, cfg: &StepConfig) -> Result<Box<dyn Step>> {
+    /// Build the step for `cfg` for the rollback path: references that
+    /// `env` can resolve are interpolated, the rest (e.g. vars published
+    /// by earlier steps during the original run) are left as-is.
+    pub fn build_lenient(&self, cfg: &StepConfig, env: &Env) -> Result<Box<dyn Step>> {
         let factory = self
             .inner
             .get(&cfg.kind)
             .with_context(|| format!("step '{}': unsupported type '{}'", cfg.id, cfg.kind))?;
-        let body = toml::Value::Table(cfg.body.clone());
+        let raw_body = toml::Value::Table(cfg.body.clone());
+        let body = interp::interpolate_toml_lenient(&raw_body, env)
+            .with_context(|| format!("step '{}': failed to interpolate body", cfg.id))?;
         factory(body).with_context(|| format!("step '{}': failed to build", cfg.id))
     }
 

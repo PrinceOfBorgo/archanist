@@ -51,6 +51,57 @@ pub struct ComponentConfig {
     pub steps: Vec<StepConfig>,
     pub release: Option<ReleaseSource>,
     pub vars: HashMap<String, String>,
+    pub sandbox: Option<SandboxConfig>,
+}
+
+/// Optional `[sandbox]` section of a component recipe: how to rehearse the
+/// component's update against throwaway infrastructure (see `archanist sandbox`).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxConfig {
+    /// Version recorded as already installed once `setup` has run. Unset
+    /// rehearses a fresh install.
+    #[serde(default)]
+    pub baseline_version: Option<String>,
+    /// Docker network created for the sandbox; services join it.
+    #[serde(default)]
+    pub network: Option<String>,
+    /// Ids of `[[steps]]` left out of the sandbox run.
+    #[serde(default)]
+    pub skip_steps: Vec<String>,
+    /// Extra containers force-removed on reset (e.g. ones `docker_swap` creates).
+    #[serde(default)]
+    pub cleanup_containers: Vec<String>,
+    /// Overrides for `[vars]` entries.
+    #[serde(default)]
+    pub vars: HashMap<String, String>,
+    /// Shadows for `${env.NAME}` lookups.
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+    /// Per-step body keys merged over the matching `[[steps]]` entry.
+    #[serde(default, rename = "override")]
+    pub overrides: HashMap<String, toml::Table>,
+    /// Long-lived peer containers started before the run.
+    #[serde(default)]
+    pub services: Vec<SandboxService>,
+    /// Steps run once to lay down the baseline install the update starts from.
+    #[serde(default)]
+    pub setup: Vec<StepConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxService {
+    pub name: String,
+    pub image: String,
+    #[serde(default)]
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub volumes: Vec<String>,
+    #[serde(default)]
+    pub healthcheck: Option<crate::docker::HealthCheck>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +154,8 @@ struct ComponentConfigFile {
     release: Option<ReleaseSource>,
     #[serde(default)]
     vars: HashMap<String, String>,
+    #[serde(default)]
+    sandbox: Option<SandboxConfig>,
 }
 
 fn default_log_level() -> String {
@@ -230,6 +283,10 @@ impl ArchanistConfig {
                     bail!("{}: duplicate step id '{}'", path.display(), step.id);
                 }
             }
+            if let Some(sb) = &file.sandbox {
+                validate_sandbox(&file.steps, sb)
+                    .with_context(|| format!("{}: invalid [sandbox] section", path.display()))?;
+            }
 
             map.insert(
                 name,
@@ -238,6 +295,7 @@ impl ArchanistConfig {
                     steps: file.steps,
                     release: file.release,
                     vars: file.vars,
+                    sandbox: file.sandbox,
                 },
             );
         }
@@ -260,5 +318,110 @@ impl ArchanistConfig {
 
     pub fn state_path(&self) -> PathBuf {
         self.resolve_path(&self.state_file)
+    }
+}
+
+fn validate_sandbox(steps: &[StepConfig], sb: &SandboxConfig) -> Result<()> {
+    let known = |id: &str| steps.iter().any(|s| s.id == id);
+    for id in &sb.skip_steps {
+        if !known(id) {
+            bail!("skip_steps names unknown step '{id}'");
+        }
+    }
+    for (id, body) in &sb.overrides {
+        if !known(id) {
+            bail!("override for unknown step '{id}'");
+        }
+        if body.contains_key("id") || body.contains_key("type") {
+            bail!("override for step '{id}' must not change `id` or `type`");
+        }
+    }
+    if sb.network.as_deref().is_some_and(|n| n.trim().is_empty()) {
+        bail!("`network` must not be empty");
+    }
+    let mut seen = std::collections::HashSet::new();
+    for s in &sb.setup {
+        if !seen.insert(s.id.as_str()) || known(&s.id) {
+            bail!(
+                "setup step id '{}' is not unique across setup and [[steps]]",
+                s.id
+            );
+        }
+    }
+    // Guard against a sandbox run recreating the real container.
+    for s in steps
+        .iter()
+        .filter(|s| s.kind == "docker_swap" && !sb.skip_steps.contains(&s.id))
+    {
+        if !sb
+            .overrides
+            .get(&s.id)
+            .is_some_and(|o| o.contains_key("container"))
+        {
+            bail!(
+                "docker_swap step '{}' needs `[sandbox.override.{}] container = ...` (or list it in skip_steps)",
+                s.id,
+                s.id
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> ComponentConfigFile {
+        toml::from_str(text).unwrap()
+    }
+
+    const SWAP: &str = r#"
+        schema = 1
+        [[steps]]
+        id = "swap"
+        type = "docker_swap"
+        image = "app"
+        container = "app"
+    "#;
+
+    #[test]
+    fn sandbox_requires_container_override_for_swap() {
+        let f = parse(&format!("{SWAP}\n[sandbox]\nnetwork = \"sb\""));
+        let err = validate_sandbox(&f.steps, f.sandbox.as_ref().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("swap"), "err: {err}");
+    }
+
+    #[test]
+    fn sandbox_accepts_overridden_or_skipped_swap() {
+        let f = parse(&format!(
+            "{SWAP}\n[sandbox.override.swap]\ncontainer = \"app-sandbox\""
+        ));
+        validate_sandbox(&f.steps, f.sandbox.as_ref().unwrap()).unwrap();
+        let f = parse(&format!("{SWAP}\n[sandbox]\nskip_steps = [\"swap\"]"));
+        validate_sandbox(&f.steps, f.sandbox.as_ref().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn sandbox_rejects_unknown_step_refs() {
+        let f = parse(&format!(
+            "{SWAP}\n[sandbox]\nskip_steps = [\"swap\", \"nope\"]"
+        ));
+        assert!(validate_sandbox(&f.steps, f.sandbox.as_ref().unwrap()).is_err());
+    }
+
+    #[test]
+    fn sandbox_rejects_setup_id_clashing_with_steps() {
+        let f = parse(&format!(
+            "{SWAP}\n[sandbox]\nskip_steps = [\"swap\"]\n[[sandbox.setup]]\nid = \"swap\"\ntype = \"shell\""
+        ));
+        assert!(validate_sandbox(&f.steps, f.sandbox.as_ref().unwrap()).is_err());
+    }
+
+    #[test]
+    fn sandbox_rejects_unknown_fields() {
+        let r: Result<ComponentConfigFile, _> =
+            toml::from_str("schema = 1\n[sandbox]\noverides = {}");
+        assert!(r.is_err());
     }
 }

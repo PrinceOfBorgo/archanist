@@ -7,18 +7,21 @@
 //! component-specific tools (a DB client, `unzip`, ...) by naming their
 //! images instead of baking them into the archanist image.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use bollard::Docker;
 use bollard::models::{
-    ContainerCreateBody, ContainerSummary, HostConfig, RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, ContainerSummary, HealthConfig, HealthStatusEnum, HostConfig,
+    NetworkCreateRequest, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
-    AttachContainerOptions, CreateContainerOptions, CreateImageOptions, ListContainersOptions,
-    LogsOptions, RemoveContainerOptions, StartContainerOptions, StopContainerOptions,
-    WaitContainerOptions,
+    AttachContainerOptions, CreateContainerOptions, CreateImageOptions, InspectContainerOptions,
+    InspectNetworkOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
+    StartContainerOptions, StopContainerOptions, WaitContainerOptions,
 };
 use futures_util::StreamExt;
+use serde::Deserialize;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tracing::{debug, info};
 
@@ -50,11 +53,14 @@ pub struct ContainerRunSpec {
 
 /// Everything needed to (re)create one long-lived service container via
 /// [`DockerClient::run_container`].
+#[derive(Default)]
 pub struct ServiceSpec {
     /// Container name.
     pub name: String,
     /// Image reference to run.
     pub image: String,
+    /// Command argv. Empty leaves the image's default command in place.
+    pub cmd: Vec<String>,
     /// `KEY=VALUE` environment entries.
     pub env: Vec<String>,
     /// Bind mounts in `host:container[:mode]` form.
@@ -65,7 +71,35 @@ pub struct ServiceSpec {
     pub extra_hosts: Vec<String>,
     /// Restart policy name (e.g. `unless-stopped`), if any.
     pub restart_policy: Option<String>,
+    /// Docker healthcheck, if any.
+    pub healthcheck: Option<HealthCheck>,
 }
+
+/// Docker healthcheck for a service container.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthCheck {
+    /// Healthcheck argv, e.g. `["CMD", "/surreal", "isready", ...]`.
+    pub test: Vec<String>,
+    #[serde(default = "default_hc_interval")]
+    pub interval_secs: u64,
+    #[serde(default = "default_hc_timeout")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_hc_retries")]
+    pub retries: u32,
+}
+
+fn default_hc_interval() -> u64 {
+    2
+}
+fn default_hc_timeout() -> u64 {
+    2
+}
+fn default_hc_retries() -> u32 {
+    15
+}
+
+const NANOS_PER_SEC: i64 = 1_000_000_000;
 
 #[derive(Clone)]
 pub struct DockerClient {
@@ -158,11 +192,13 @@ impl DockerClient {
         let ServiceSpec {
             name,
             image,
+            cmd,
             env,
             volumes,
             network,
             extra_hosts,
             restart_policy,
+            healthcheck,
         } = spec;
         info!("creating container {name} from {image}");
         let host_config = HostConfig {
@@ -181,7 +217,15 @@ impl DockerClient {
         };
         let config = ContainerCreateBody {
             image: Some(image.clone()),
+            cmd: if cmd.is_empty() { None } else { Some(cmd) },
             env: Some(env),
+            healthcheck: healthcheck.map(|hc| HealthConfig {
+                test: Some(hc.test),
+                interval: Some(hc.interval_secs as i64 * NANOS_PER_SEC),
+                timeout: Some(hc.timeout_secs as i64 * NANOS_PER_SEC),
+                retries: Some(i64::from(hc.retries)),
+                ..Default::default()
+            }),
             host_config: Some(host_config),
             ..Default::default()
         };
@@ -203,6 +247,80 @@ impl DockerClient {
             &resp.id[..12.min(resp.id.len())]
         );
         Ok(resp.id)
+    }
+
+    /// Start an existing (stopped) container. Already running is fine.
+    pub async fn start_existing(&self, name: &str) -> Result<()> {
+        match self
+            .client
+            .start_container(name, None::<StartContainerOptions>)
+            .await
+        {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304, ..
+            }) => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("start {name}")),
+        }
+    }
+
+    /// Poll the container's healthcheck until it reports healthy, giving up
+    /// once the check's own retry budget (plus a grace period) is spent.
+    pub async fn wait_healthy(&self, name: &str, hc: &HealthCheck) -> Result<()> {
+        let budget = hc.interval_secs.max(1) * (u64::from(hc.retries) + 1) + 30;
+        let deadline = Instant::now() + Duration::from_secs(budget);
+        loop {
+            let info = self
+                .client
+                .inspect_container(name, None::<InspectContainerOptions>)
+                .await
+                .with_context(|| format!("inspect {name}"))?;
+            match info.state.and_then(|s| s.health).and_then(|h| h.status) {
+                Some(HealthStatusEnum::HEALTHY) => return Ok(()),
+                Some(HealthStatusEnum::UNHEALTHY) => bail!("container {name} is unhealthy"),
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for container {name} to become healthy");
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Create the user network `name` unless it already exists.
+    pub async fn ensure_network(&self, name: &str) -> Result<()> {
+        match self
+            .client
+            .inspect_network(name, None::<InspectNetworkOptions>)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {
+                info!("creating network: {name}");
+                self.client
+                    .create_network(NetworkCreateRequest {
+                        name: name.to_string(),
+                        ..Default::default()
+                    })
+                    .await
+                    .with_context(|| format!("create network {name}"))?;
+                Ok(())
+            }
+            Err(e) => Err(e).with_context(|| format!("inspect network {name}")),
+        }
+    }
+
+    pub async fn remove_network(&self, name: &str) -> Result<()> {
+        info!("removing network: {name}");
+        match self.client.remove_network(name).await {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("remove network {name}")),
+        }
     }
 
     /// Create and start an anonymous container, stream its logs, wait for it

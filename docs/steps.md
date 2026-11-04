@@ -386,7 +386,7 @@ host subprocess or, when `image` is set, inside a throwaway container.
 | `command`          | array<string>           | (required)     | argv template. Must be non-empty.                                                                                                                                                |
 | `rollback_command` | array<string>           | none           | argv template for reverting a single migration by stem. See below.                                                                                                               |
 | `backup_command`   | array<string>           | none           | argv run once BEFORE any migration to snapshot the database. `{backup}` placeholder. See below.                                                                                  |
-| `restore`          | array<table\>           | `[]`           | Ordered restore runs executed on rollback in place of `rollback_command`. Each has a `command` (with `{backup}`) and optional `stdin`. Takes precedence over `rollback_command`. |
+| `restore`          | array<table\>           | `[]`           | Ordered restore runs executed on rollback in place of `rollback_command`. Each has a `command` (with `{backup}`), optional `stdin`, and optional `image` overriding the step's `image` for that run. Takes precedence over `rollback_command`. |
 | `cwd`              | string                  | none           | Working directory for host-mode `command` / `rollback_command` (and the container workdir when `workdir` is unset).                                                              |
 | `image`            | string                  | none           | Run `command` / `backup_command` / `restore` commands as the argv of a throwaway container from this image instead of as host subprocesses.                                      |
 | `network`          | string                  | none           | User network the helper container joins (`--network`). Only with `image`.                                                                                                        |
@@ -434,7 +434,9 @@ the step.
 - When `image` is set, every command (`command`, `backup_command`, and
   each `restore` command) runs as the argv of a throwaway container
   from that image via the Docker socket rather than as a host
-  subprocess. Mount the data volume with `binds` so the `{file}` /
+  subprocess. A `restore` run with its own `image` uses that instead
+  (e.g. `busybox` to patch the dump before importing it). Mount the
+  data volume with `binds` so the `{file}` /
   `{backup}` paths resolve identically inside it. The per-attempt
   `{backup}` directory is made world-writable first, so a container that
   runs as a non-root user can still write its dump into it.

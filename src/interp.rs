@@ -33,6 +33,10 @@ pub type Env = HashMap<String, String>;
 /// Errors on unterminated `${` or references to variables missing from
 /// both `env` and, for `env.*` names, the process environment.
 pub fn interpolate(template: &str, env: &Env) -> Result<String> {
+    interpolate_impl(template, env, false)
+}
+
+fn interpolate_impl(template: &str, env: &Env, lenient: bool) -> Result<String> {
     let mut out = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
     while let Some(c) = chars.next() {
@@ -59,8 +63,15 @@ pub fn interpolate(template: &str, env: &Env) -> Result<String> {
                 if !closed {
                     bail!("unterminated `${{` in template (started at '${{{}')", name);
                 }
-                let value = resolve(&name, env)?;
-                out.push_str(&value);
+                match resolve(&name, env) {
+                    Ok(value) => out.push_str(&value),
+                    Err(_) if lenient => {
+                        out.push_str("${");
+                        out.push_str(&name);
+                        out.push('}');
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             _ => {
                 // Lone '$' - emit literal
@@ -89,17 +100,26 @@ fn resolve(name: &str, env: &Env) -> Result<String> {
 /// pre-resolve a step config's body before the step is built, so `apply`
 /// implementations see fully-resolved fields.
 pub fn interpolate_toml(value: &toml::Value, env: &Env) -> Result<toml::Value> {
+    interpolate_toml_impl(value, env, false)
+}
+
+/// Like [`interpolate_toml`], but leaves unresolvable references as-is.
+pub fn interpolate_toml_lenient(value: &toml::Value, env: &Env) -> Result<toml::Value> {
+    interpolate_toml_impl(value, env, true)
+}
+
+fn interpolate_toml_impl(value: &toml::Value, env: &Env, lenient: bool) -> Result<toml::Value> {
     match value {
-        toml::Value::String(s) => interpolate(s, env).map(toml::Value::String),
+        toml::Value::String(s) => interpolate_impl(s, env, lenient).map(toml::Value::String),
         toml::Value::Array(arr) => arr
             .iter()
-            .map(|v| interpolate_toml(v, env))
+            .map(|v| interpolate_toml_impl(v, env, lenient))
             .collect::<Result<Vec<_>>>()
             .map(toml::Value::Array),
         toml::Value::Table(t) => {
             let mut out = toml::Table::new();
             for (k, v) in t {
-                out.insert(k.clone(), interpolate_toml(v, env)?);
+                out.insert(k.clone(), interpolate_toml_impl(v, env, lenient)?);
             }
             Ok(toml::Value::Table(out))
         }
@@ -139,6 +159,17 @@ pub fn expand_component_vars(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lenient_toml_keeps_unresolved_refs() {
+        let mut e = Env::new();
+        e.insert("vars.image".into(), "surreal:v2".into());
+        let v = toml::Value::String("${vars.image} ${vars.migrations}".into());
+        assert_eq!(
+            interpolate_toml_lenient(&v, &e).unwrap().as_str(),
+            Some("surreal:v2 ${vars.migrations}")
+        );
+    }
 
     fn env(pairs: &[(&str, &str)]) -> Env {
         pairs
