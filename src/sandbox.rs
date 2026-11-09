@@ -56,6 +56,7 @@ pub async fn run(
                 sb.setup.clone(),
                 false,
                 dir.clone(),
+                dir.join("components"),
                 registry.clone(),
             )
             .run(env.clone(), |_, _| Ok(()))
@@ -76,6 +77,7 @@ pub async fn run(
     }
 
     println!("[sandbox] {component}: running update");
+    // No mid-run reload: the reloaded recipe would drop the sandbox overrides.
     let result = crate::run_update(
         &sb_cfg,
         &mut state,
@@ -83,6 +85,7 @@ pub async fn run(
         &state_path,
         registry,
         &sandbox_env(sb, &dir),
+        false,
     )
     .await;
     state.save(&state_path)?;
@@ -241,7 +244,8 @@ fn sandbox_config(
         log_file_level: cfg.log_file_level.clone(),
         log_rotation: cfg.log_rotation,
         state_file: PathBuf::from("state.toml"),
-        components_dir: cfg.components_dir.clone(),
+        // `recipe_sync` installs here, away from the real recipes.
+        components_dir: dir.join("components"),
         base_dir: dir.to_path_buf(),
         self_component: None,
         components: HashMap::from([(component.to_string(), sandboxed)]),

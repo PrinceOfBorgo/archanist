@@ -14,6 +14,8 @@
 //! layout.
 
 use crate::release::ReleaseSource;
+use crate::steps::StepKind;
+use crate::steps::docker_swap::DockerSwap;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -258,48 +260,51 @@ impl ArchanistConfig {
 
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("Failed to read component file: {}", path.display()))?;
-            let file: ComponentConfigFile = toml::from_str(&content)
-                .with_context(|| format!("Failed to parse component file: {}", path.display()))?;
-
-            let schema = file.schema.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{}: missing `schema` field. Every component file must declare \
-                     `schema = <integer>` at the top level.",
-                    path.display()
-                )
-            })?;
-            if !SUPPORTED_COMPONENT_SCHEMAS.contains(&schema) {
-                bail!(
-                    "{}: unsupported component schema {}. This binary supports {:?}.",
-                    path.display(),
-                    schema,
-                    SUPPORTED_COMPONENT_SCHEMAS,
-                );
-            }
-
-            let mut seen = std::collections::HashSet::new();
-            for step in &file.steps {
-                if !seen.insert(step.id.clone()) {
-                    bail!("{}: duplicate step id '{}'", path.display(), step.id);
-                }
-            }
-            if let Some(sb) = &file.sandbox {
-                validate_sandbox(&file.steps, sb)
-                    .with_context(|| format!("{}: invalid [sandbox] section", path.display()))?;
-            }
-
-            map.insert(
-                name,
-                ComponentConfig {
-                    description: file.description,
-                    steps: file.steps,
-                    release: file.release,
-                    vars: file.vars,
-                    sandbox: file.sandbox,
-                },
-            );
+            map.insert(name, Self::parse_component(&content, &path)?);
         }
         Ok(map)
+    }
+
+    /// Parse and validate a single component recipe. `path` is only used
+    /// in error messages.
+    pub fn parse_component(content: &str, path: &Path) -> Result<ComponentConfig> {
+        let file: ComponentConfigFile = toml::from_str(content)
+            .with_context(|| format!("Failed to parse component file: {}", path.display()))?;
+
+        let schema = file.schema.ok_or_else(|| {
+            anyhow::anyhow!(
+                "{}: missing `schema` field. Every component file must declare \
+                 `schema = <integer>` at the top level.",
+                path.display()
+            )
+        })?;
+        if !SUPPORTED_COMPONENT_SCHEMAS.contains(&schema) {
+            bail!(
+                "{}: unsupported component schema {}. This binary supports {:?}.",
+                path.display(),
+                schema,
+                SUPPORTED_COMPONENT_SCHEMAS,
+            );
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        for step in &file.steps {
+            if !seen.insert(step.id.clone()) {
+                bail!("{}: duplicate step id '{}'", path.display(), step.id);
+            }
+        }
+        if let Some(sb) = &file.sandbox {
+            validate_sandbox(&file.steps, sb)
+                .with_context(|| format!("{}: invalid [sandbox] section", path.display()))?;
+        }
+
+        Ok(ComponentConfig {
+            description: file.description,
+            steps: file.steps,
+            release: file.release,
+            vars: file.vars,
+            sandbox: file.sandbox,
+        })
     }
 
     pub fn component_names(&self) -> Vec<String> {
@@ -351,7 +356,7 @@ fn validate_sandbox(steps: &[StepConfig], sb: &SandboxConfig) -> Result<()> {
     // Guard against a sandbox run recreating the real container.
     for s in steps
         .iter()
-        .filter(|s| s.kind == "docker_swap" && !sb.skip_steps.contains(&s.id))
+        .filter(|s| s.kind == DockerSwap::KIND && !sb.skip_steps.contains(&s.id))
     {
         if !sb
             .overrides

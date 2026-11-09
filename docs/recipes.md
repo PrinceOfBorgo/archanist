@@ -299,7 +299,9 @@ the real latest release without touching the live deployment:
    minus `skip_steps`, with each `[sandbox.override.<id>]` table merged
    over the matching step body and `[sandbox.vars]` merged over
    `[vars]`. The sandbox blocklist is cleared first, so a failed
-   rehearsal can be retried.
+   rehearsal can be retried. `recipe_sync` steps install into
+   `<base_dir>/sandbox/<component>/components/` and never reload, so
+   they can stay in the rehearsal without touching the live recipes.
 4. Print a summary (container images, resulting version).
 
 The sandbox keeps its own `state.toml`, migration logs and backups

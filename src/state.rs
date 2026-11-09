@@ -140,6 +140,23 @@ impl UpdateAttempt {
         self.steps.iter_mut().find(|s| s.id == id)
     }
 
+    /// Append a [`StepRunState::Pending`] slot for `id` unless one exists
+    /// (a recipe reloaded mid-run can introduce steps the attempt wasn't
+    /// seeded with).
+    pub fn ensure_step(&mut self, id: &str, kind: &str) {
+        if self.slot_mut(id).is_none() {
+            self.steps.push(StepRun {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                state: StepRunState::Pending,
+                payload: empty_payload(),
+                started_at: None,
+                finished_at: None,
+                message: None,
+            });
+        }
+    }
+
     /// Move a step to [`StepRunState::Running`] and stamp `started_at`.
     /// Returns `false` if `id` is unknown to the attempt (shouldn't
     /// happen if the attempt was built from the same pipeline).
@@ -291,6 +308,16 @@ mod tests {
         let mut a = attempt_with_two_steps();
         assert!(!a.mark_step_running("nope"));
         assert!(!a.mark_step_done("nope", empty_payload()));
+    }
+
+    #[test]
+    fn ensure_step_appends_once() {
+        let mut a = attempt_with_two_steps();
+        let before = a.steps.len();
+        a.ensure_step("extra", "shell");
+        a.ensure_step("extra", "shell");
+        assert_eq!(a.steps.len(), before + 1);
+        assert!(a.mark_step_running("extra"));
     }
 
     #[test]

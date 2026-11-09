@@ -2,7 +2,7 @@
 //! status code. Used after `docker_swap` to gate on the new container
 //! actually being ready before the pipeline moves on.
 
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::time::{Duration, Instant};
@@ -37,8 +37,10 @@ fn default_interval_secs() -> u64 {
     2
 }
 
-impl HttpHealth {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for HttpHealth {
+    const KIND: &'static str = "http_health";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let raw: HttpHealthRaw = body.try_into().context("invalid http_health config")?;
         Ok(Self {
             url: raw.url,

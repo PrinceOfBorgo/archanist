@@ -8,7 +8,7 @@
 //! this (rollback then becomes a no-op).
 
 use crate::steps::backup::{self, BackupBuilder};
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::Path;
@@ -33,8 +33,10 @@ fn default_backup() -> bool {
     true
 }
 
-impl Download {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for Download {
+    const KIND: &'static str = "download";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let raw: DownloadRaw = body.try_into().context("invalid download config")?;
         Ok(Self {
             url: raw.url,

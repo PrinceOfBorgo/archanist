@@ -1,9 +1,9 @@
 //! [`Step`] trait, execution context, and the built-in step registry.
 //!
-//! Adding a new step kind = implement the step type with an inherent
-//! `from_body(toml::Value) -> Result<Self>` factory in a submodule, then
-//! register it in [`builtin_registry`] so `${var}` interpolation, the
-//! pipeline runner, and `archanist step-kinds` all see it.
+//! Adding a new step kind = implement [`Step`] and [`StepKind`] for the
+//! step type in a submodule, then register it in [`builtin_registry`] so
+//! `${var}` interpolation, the pipeline runner, and `archanist step-kinds`
+//! all see it.
 
 pub mod backup;
 pub mod config_merge;
@@ -14,6 +14,7 @@ pub mod docker_swap;
 pub mod download;
 pub mod http_health;
 pub mod parse_text;
+pub mod recipe_sync;
 pub mod shell;
 
 use crate::config::StepConfig;
@@ -44,6 +45,8 @@ pub struct StepCtx {
     /// state (e.g. `<base_dir>/.archanist-migrations/<component>/<step_id>.toml`).
     /// Comes from [`crate::config::ArchanistConfig::base_dir`].
     pub base_dir: PathBuf,
+    /// Where component recipes live; `recipe_sync` installs into it.
+    pub components_dir: PathBuf,
     /// True when the pipeline is updating the archanist itself. Consumed by
     /// `docker_swap` to force `exit_after` even when the step's own `self`
     /// field is unset (declarative sugar for "this component is me").
@@ -62,6 +65,9 @@ pub struct StepOutcome {
     /// Opaque payload persisted per-step in state. Consumed by `rollback`
     /// to know what to undo.
     pub payload: toml::Value,
+    /// Continue the run with the component's recipe as it now is on disk
+    /// (set by `recipe_sync` with `reload = true`).
+    pub reload_recipe: bool,
 }
 
 impl Default for StepOutcome {
@@ -70,6 +76,7 @@ impl Default for StepOutcome {
             exit_after: false,
             exported_vars: Env::new(),
             payload: toml::Value::Table(toml::Table::new()),
+            reload_recipe: false,
         }
     }
 }
@@ -115,6 +122,15 @@ pub trait Step: Send + Sync {
     }
 }
 
+/// A step type recipes can select by name; see [`StepRegistry::register_kind`].
+pub trait StepKind: Step + Sized + 'static {
+    /// The step's `type` in recipes.
+    const KIND: &'static str;
+
+    /// Build the step from its already-interpolated body.
+    fn from_body(body: toml::Value) -> Result<Self>;
+}
+
 /// A factory that turns an already-interpolated step body into a boxed
 /// step. Registered against a `type` string in a [`StepRegistry`].
 pub type StepFactory = Arc<dyn Fn(toml::Value) -> Result<Box<dyn Step>> + Send + Sync>;
@@ -140,6 +156,11 @@ impl StepRegistry {
         F: Fn(toml::Value) -> Result<Box<dyn Step>> + Send + Sync + 'static,
     {
         self.inner.insert(kind.into(), Arc::new(factory));
+    }
+
+    /// Register `T` under [`StepKind::KIND`].
+    pub fn register_kind<T: StepKind>(&mut self) {
+        self.register(T::KIND, |b| Ok(Box::new(T::from_body(b)?)));
     }
 
     /// Build the step for `cfg`, interpolating `${var}` references in
@@ -182,31 +203,16 @@ impl StepRegistry {
 /// Build the registry populated with all built-in step kinds.
 pub fn builtin_registry() -> StepRegistry {
     let mut r = StepRegistry::new();
-    r.register("shell", |b| Ok(Box::new(shell::Shell::from_body(b)?)));
-    r.register("download", |b| {
-        Ok(Box::new(download::Download::from_body(b)?))
-    });
-    r.register("http_health", |b| {
-        Ok(Box::new(http_health::HttpHealth::from_body(b)?))
-    });
-    r.register("copy_files", |b| {
-        Ok(Box::new(copy_files::CopyFiles::from_body(b)?))
-    });
-    r.register("config_merge", |b| {
-        Ok(Box::new(config_merge::ConfigMerge::from_body(b)?))
-    });
-    r.register("container_run", |b| {
-        Ok(Box::new(container_run::ContainerRun::from_body(b)?))
-    });
-    r.register("parse_text", |b| {
-        Ok(Box::new(parse_text::ParseTextStep::from_body(b)?))
-    });
-    r.register("db_migrate", |b| {
-        Ok(Box::new(db_migrate::DbMigrateStep::from_body(b)?))
-    });
-    r.register("docker_swap", |b| {
-        Ok(Box::new(docker_swap::DockerSwap::from_body(b)?))
-    });
+    r.register_kind::<shell::Shell>();
+    r.register_kind::<download::Download>();
+    r.register_kind::<http_health::HttpHealth>();
+    r.register_kind::<copy_files::CopyFiles>();
+    r.register_kind::<config_merge::ConfigMerge>();
+    r.register_kind::<container_run::ContainerRun>();
+    r.register_kind::<parse_text::ParseTextStep>();
+    r.register_kind::<db_migrate::DbMigrateStep>();
+    r.register_kind::<docker_swap::DockerSwap>();
+    r.register_kind::<recipe_sync::RecipeSync>();
     r
 }
 
@@ -227,6 +233,7 @@ mod tests {
             "download",
             "http_health",
             "parse_text",
+            "recipe_sync",
             "shell",
         ] {
             assert!(

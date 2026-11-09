@@ -10,7 +10,7 @@
 //! A non-zero container exit fails the step.
 
 use crate::docker::{ContainerRunSpec, DockerClient};
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
@@ -56,8 +56,10 @@ pub struct ContainerRun {
     raw: ContainerRunRaw,
 }
 
-impl ContainerRun {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for ContainerRun {
+    const KIND: &'static str = "container_run";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let raw: ContainerRunRaw = body.try_into().context("invalid container_run config")?;
         if raw.image.trim().is_empty() {
             bail!("`image` must not be empty");

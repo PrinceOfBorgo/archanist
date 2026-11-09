@@ -36,7 +36,7 @@
 //! the `{file}` / `{backup}` paths resolve identically inside it.
 
 use crate::steps::backup;
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -161,8 +161,10 @@ struct MigratePayload {
     backup_dir: Option<String>,
 }
 
-impl DbMigrateStep {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for DbMigrateStep {
+    const KIND: &'static str = "db_migrate";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let step: DbMigrateStep = body.try_into().context("invalid db_migrate config")?;
         if step.command.is_empty() {
             bail!("`command` must not be empty");
@@ -174,7 +176,9 @@ impl DbMigrateStep {
         }
         Ok(step)
     }
+}
 
+impl DbMigrateStep {
     fn resolved_base(&self, ctx: &StepCtx) -> PathBuf {
         match &self.base {
             Some(b) => PathBuf::from(b),

@@ -17,6 +17,7 @@ listed by `archanist rollback` but tagged `(no-op)`.
 - [`download`](#download)
 - [`http_health`](#http_health)
 - [`copy_files`](#copy_files)
+- [`recipe_sync`](#recipe_sync)
 - [`config_merge`](#config_merge)
 - [`parse_text`](#parse_text)
 - [`db_migrate`](#db_migrate)
@@ -209,6 +210,64 @@ src  = "${vars.bundle_dir}/locales"
 dest = "${vars.install_dir}/locales"
 ```
 
+To install component recipes, use [`recipe_sync`](#recipe_sync)
+instead: it validates them first and can apply them mid-run.
+
+---
+
+## <a id="recipe_sync"></a> `recipe_sync`
+
+Install component recipes (for example the ones shipped in a release
+bundle) into archanist's `components_dir`, optionally switching the
+running update over to the new recipe.
+
+### Body
+
+| Field    | Type   | Default    | Notes                                                                                                                                    |
+| -------- | ------ | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `src`    | string | (required) | A recipe file, or a directory whose `*.toml` files (not recursive) are all installed. Each lands in `components_dir` under its own name. |
+| `reload` | bool   | `false`    | Continue this run with the component's new recipe. With `false` the new recipes apply from the next run.                                 |
+| `backup` | bool   | `true`     | Snapshot every recipe this step overwrites so `rollback` can restore it (and delete newly-added ones). Set `false` to opt out.           |
+
+### Behavior
+
+- `apply` first parses every source recipe and checks that each step
+  type (including `[[sandbox.setup]]`) is supported by the running
+  archanist. Any problem fails the step before a file is written, so a
+  recipe that would break the next run never reaches disk. With
+  `reload = true`, the component's own new recipe must also still
+  contain this step's `id`, since the run continues from there.
+  Recipes are then written atomically; identical ones are left alone.
+- With `reload = true`, the remaining steps and `[vars]` come from the
+  component's new recipe, continuing after this step's `id`. Steps
+  that already completed in this run are skipped even if the new
+  recipe moves them after this step. Recipes of other components are
+  installed but only apply from the next run.
+- In `archanist sandbox run` the recipes are installed under the
+  sandbox dir instead, and the run never reloads (a reloaded recipe
+  would lose the sandbox overrides).
+- `rollback` - when `backup = true`, restores the previous recipes and
+  deletes the ones this step added. With `backup = false`, a no-op.
+- `is_satisfied` - default `false`.
+
+### Taking over from an older recipe
+
+A recipe that installed its successor with another step (for example
+`copy_files`) can still hand over mid-run: if the new recipe declares
+the step with the same `id` as a `recipe_sync` with `reload = true`,
+the run continues with the new recipe. Keep the step's `id` when
+switching it to `recipe_sync`.
+
+### Example
+
+```toml
+[[steps]]
+id     = "sync_archanist_recipes"
+type   = "recipe_sync"
+src    = "${vars.bundle_dir}/archanist/components"
+reload = true
+```
+
 ---
 
 ## <a id="config_merge"></a> `config_merge`
@@ -377,23 +436,23 @@ host subprocess or, when `image` is set, inside a throwaway container.
 
 ### Body
 
-| Field              | Type                    | Default        | Notes                                                                                                                                                                            |
-| ------------------ | ----------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `glob`             | string                  | none           | Filesystem glob for migration files. Mutually exclusive with `files`.                                                                                                            |
-| `files`            | array<string> \| string | none           | Explicit list, or a single string split on `split`. Mutually exclusive with `glob`.                                                                                              |
-| `split`            | string                  | `"\n"`         | Used to split `files` when it's a delimited string. Whitespace is trimmed; empties dropped.                                                                                      |
-| `base`             | string                  | `ctx.base_dir` | Prefix for non-absolute paths in `files` / `glob`.                                                                                                                               |
-| `command`          | array<string>           | (required)     | argv template. Must be non-empty.                                                                                                                                                |
-| `rollback_command` | array<string>           | none           | argv template for reverting a single migration by stem. See below.                                                                                                               |
-| `backup_command`   | array<string>           | none           | argv run once BEFORE any migration to snapshot the database. `{backup}` placeholder. See below.                                                                                  |
+| Field              | Type                    | Default        | Notes                                                                                                                                                                                                                                          |
+| ------------------ | ----------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `glob`             | string                  | none           | Filesystem glob for migration files. Mutually exclusive with `files`.                                                                                                                                                                          |
+| `files`            | array<string> \| string | none           | Explicit list, or a single string split on `split`. Mutually exclusive with `glob`.                                                                                                                                                            |
+| `split`            | string                  | `"\n"`         | Used to split `files` when it's a delimited string. Whitespace is trimmed; empties dropped.                                                                                                                                                    |
+| `base`             | string                  | `ctx.base_dir` | Prefix for non-absolute paths in `files` / `glob`.                                                                                                                                                                                             |
+| `command`          | array<string>           | (required)     | argv template. Must be non-empty.                                                                                                                                                                                                              |
+| `rollback_command` | array<string>           | none           | argv template for reverting a single migration by stem. See below.                                                                                                                                                                             |
+| `backup_command`   | array<string>           | none           | argv run once BEFORE any migration to snapshot the database. `{backup}` placeholder. See below.                                                                                                                                                |
 | `restore`          | array<table\>           | `[]`           | Ordered restore runs executed on rollback in place of `rollback_command`. Each has a `command` (with `{backup}`), optional `stdin`, and optional `image` overriding the step's `image` for that run. Takes precedence over `rollback_command`. |
-| `cwd`              | string                  | none           | Working directory for host-mode `command` / `rollback_command` (and the container workdir when `workdir` is unset).                                                              |
-| `image`            | string                  | none           | Run `command` / `backup_command` / `restore` commands as the argv of a throwaway container from this image instead of as host subprocesses.                                      |
-| `network`          | string                  | none           | User network the helper container joins (`--network`). Only with `image`.                                                                                                        |
-| `extra_hosts`      | array<string>           | `[]`           | `--add-host` entries for the helper container. Only with `image`.                                                                                                                |
-| `binds`            | array<string>           | `[]`           | Bind mounts for the helper container in `host:container[:mode]` form. Only with `image`.                                                                                         |
-| `workdir`          | string                  | none           | Working directory inside the helper container. Only with `image`.                                                                                                                |
-| `pull`             | bool                    | `true`         | Pull `image` before each run. Only with `image`.                                                                                                                                 |
+| `cwd`              | string                  | none           | Working directory for host-mode `command` / `rollback_command` (and the container workdir when `workdir` is unset).                                                                                                                            |
+| `image`            | string                  | none           | Run `command` / `backup_command` / `restore` commands as the argv of a throwaway container from this image instead of as host subprocesses.                                                                                                    |
+| `network`          | string                  | none           | User network the helper container joins (`--network`). Only with `image`.                                                                                                                                                                      |
+| `extra_hosts`      | array<string>           | `[]`           | `--add-host` entries for the helper container. Only with `image`.                                                                                                                                                                              |
+| `binds`            | array<string>           | `[]`           | Bind mounts for the helper container in `host:container[:mode]` form. Only with `image`.                                                                                                                                                       |
+| `workdir`          | string                  | none           | Working directory inside the helper container. Only with `image`.                                                                                                                                                                              |
+| `pull`             | bool                    | `true`         | Pull `image` before each run. Only with `image`.                                                                                                                                                                                               |
 
 ### Step-local placeholders
 

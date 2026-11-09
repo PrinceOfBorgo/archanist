@@ -10,7 +10,7 @@
 //! becomes a no-op).
 
 use crate::steps::backup::{self, BackupBuilder};
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
@@ -35,8 +35,10 @@ fn default_backup() -> bool {
     true
 }
 
-impl ConfigMerge {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for ConfigMerge {
+    const KIND: &'static str = "config_merge";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let raw: ConfigMergeRaw = body.try_into().context("invalid config_merge config")?;
         Ok(Self {
             target: raw.target,

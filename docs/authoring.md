@@ -76,6 +76,7 @@ Path pattern by step type:
 | -------------- | ---------------------- | ------------------------------------------------------------------------------------- |
 | `download`     | `dest`                 | Into `staging_dir`.                                                                   |
 | `copy_files`   | `src`, `dest`          | `src` in `staging_dir`, `dest` in `install_dir`.                                      |
+| `recipe_sync`  | `src`                  | `src` in `staging_dir`; recipes always land in archanist's `components_dir`.          |
 | `config_merge` | `target`, `patch`      | `target` in `install_dir` (long-lived), `patch` in `staging_dir` (fresh from bundle). |
 | `parse_text`   | `file`                 | Into `staging_dir`.                                                                   |
 | `db_migrate`   | `base` / `files`       | `base` inside `staging_dir/db/`.                                                      |
@@ -122,6 +123,9 @@ If you ship a release as a zip / tarball, a suggested layout:
 ```
 myapp-v<version>/
 ├── DEPLOY.md              # human-readable release notes; also machine-parsable
+├── archanist/
+│   └── components/
+│       └── myapp.toml     # this recipe, installed by recipe_sync
 ├── config/
 │   └── config.toml        # template for config_merge (adds NEW keys only)
 ├── db/
@@ -137,6 +141,13 @@ myapp-v<version>/
 
 `DEPLOY.md` is optional but useful - see the next section for how
 `parse_text` can turn it into a machine-consumable migration list.
+
+Shipping the recipe in the bundle keeps operators' automation current
+without manual edits: a [`recipe_sync`](steps.md#recipe_sync) step
+right after extraction installs it, and with `reload = true` the rest
+of the update already runs the steps of the release being deployed.
+Keep that step's `id` stable across releases - it's where the new
+recipe picks up.
 
 ---
 

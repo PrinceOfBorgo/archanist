@@ -3,7 +3,7 @@
 //! (`cmd`, `sh`, `pwsh`, `powershell`) is selectable per-step and
 //! defaults to the platform-native choice.
 
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use tokio::process::Command;
@@ -71,8 +71,10 @@ struct ShellRaw {
     shell: Option<ShellKind>,
 }
 
-impl Shell {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for Shell {
+    const KIND: &'static str = "shell";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let raw: ShellRaw = body.try_into().context("invalid shell config")?;
         Ok(Self {
             command: raw.command,

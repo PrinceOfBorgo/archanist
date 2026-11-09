@@ -2,13 +2,15 @@
 
 ## [0.1.5-SNAPSHOT] - Unreleased
 ### Added
-- N/A
+- `recipe_sync` step: installs component recipes into `components_dir` after checking that each one parses and only uses step types the running archanist supports, so a bad recipe never lands on disk. Writes are atomic and backed up for `rollback`. `reload = true` continues the running update with the component's new recipe.
 
 ### Changed
-- N/A
+- Refactored step kind common interface, adding `StepKind` trait.
+- Updated dependencies.
 
 ### Fixed
-- N/A
+- `update`: when a step rewrote the component's own recipe (e.g. a recipe sync), the remaining steps and `[vars]` still came from the recipe loaded at startup, so recipe changes only took effect one release later. The rest of the run can now use the new recipe: when the step is a `recipe_sync` with `reload = true`, or when the new recipe declares that step as one (so an older recipe that copies its successor in still hands over). Other mid-run recipe changes are logged as a warning and apply from the next run. After a reload, steps already completed in the run are not repeated.
+- `update`: after a successful self-update, the old process went on updating the remaining components. It now stops there, so run `update` again to have the new binary handle them.
 
 ## [0.1.4] - 2026-11-04
 ### 🔧 Patch Release

@@ -187,6 +187,7 @@ async fn run_async(cli: Cli) -> Result<()> {
                 &state_path,
                 &registry,
                 &interp::Env::new(),
+                true,
             )
             .await;
             state.save(&state_path)?;
@@ -425,6 +426,7 @@ async fn run_check(
                                     step_id: step_cfg.id.clone(),
                                     component: name.clone(),
                                     base_dir: cfg.base_dir.clone(),
+                                    components_dir: cfg.components_dir.clone(),
                                     is_self_update,
                                 };
                                 step.is_satisfied(&ctx).await.unwrap_or(false)
@@ -528,6 +530,7 @@ async fn run_rollback(
             step_id: step_cfg.id.clone(),
             component: component.to_string(),
             base_dir: cfg.base_dir.clone(),
+            components_dir: cfg.components_dir.clone(),
             is_self_update,
         };
         let suffix = if step.has_rollback() { "" } else { " (no-op)" };
@@ -573,6 +576,7 @@ async fn run_update(
     state_path: &Path,
     registry: &std::sync::Arc<steps::StepRegistry>,
     extra_env: &interp::Env,
+    watch_recipes: bool,
 ) -> Result<()> {
     let names: Vec<String> = if let Some(name) = filter {
         if !cfg.components.contains_key(name) {
@@ -636,13 +640,17 @@ async fn run_update(
         println!("updating {} -> {}", current, latest);
 
         let is_self_update = cfg.self_component.as_deref() == Some(name.as_str());
-        let pipeline = pipeline::Pipeline::build(
+        let mut pipeline = pipeline::Pipeline::build(
             name,
             comp.steps.clone(),
             is_self_update,
             cfg.base_dir.clone(),
+            cfg.components_dir.clone(),
             registry.clone(),
         );
+        if watch_recipes {
+            pipeline = pipeline.watch_recipe(cfg.components_dir.join(format!("{name}.toml")));
+        }
         let component_name = name.clone();
 
         // Seed the pipeline env with built-in vars and per-component `[vars]`
@@ -670,6 +678,7 @@ async fn run_update(
                 if let Some(a) = entry.last_attempt.as_mut() {
                     match event {
                         pipeline::StepEvent::Started => {
+                            a.ensure_step(&step_cfg.id, &step_cfg.kind);
                             a.mark_step_running(&step_cfg.id);
                         }
                         pipeline::StepEvent::Completed(outcome) => {
@@ -690,6 +699,22 @@ async fn run_update(
                 entry.previous_version = entry.current_version.take();
                 entry.current_version = Some(latest.clone());
                 println!("{}: updated to {}", name, latest);
+                if is_self_update {
+                    // The rest must run on the new binary, not this one.
+                    let remaining: Vec<&str> = names
+                        .iter()
+                        .skip_while(|n| *n != name)
+                        .skip(1)
+                        .map(String::as_str)
+                        .collect();
+                    if !remaining.is_empty() {
+                        println!(
+                            "archanist updated itself; run `update` again to update: {}",
+                            remaining.join(", ")
+                        );
+                    }
+                    break;
+                }
             }
             Err(e) => {
                 println!("{}: update failed: {:#}", name, e);

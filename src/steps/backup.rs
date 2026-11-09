@@ -172,6 +172,7 @@ mod tests {
             step_id: "s1".into(),
             component: "c1".into(),
             base_dir: base.to_path_buf(),
+            components_dir: base.join("components"),
             is_self_update: false,
         }
     }

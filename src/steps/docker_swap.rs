@@ -7,7 +7,7 @@
 //! image can take over.
 
 use crate::docker::{DockerClient, ServiceSpec};
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -55,8 +55,10 @@ fn default_restart_policy() -> String {
     "unless-stopped".into()
 }
 
-impl DockerSwap {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for DockerSwap {
+    const KIND: &'static str = "docker_swap";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let raw: DockerSwapRaw = body.try_into().context("invalid docker_swap config")?;
         Ok(Self {
             image: raw.image,
@@ -70,7 +72,9 @@ impl DockerSwap {
             self_update: raw.self_update,
         })
     }
+}
 
+impl DockerSwap {
     fn full_image(image: &str, tag: &str) -> String {
         if image.contains(':') {
             image.to_string()

@@ -43,7 +43,7 @@ All commands accept `--config <path>` (default `config.toml`) and
 | `archanist update [<component>]`          | Check for updates and apply them if a newer version is available. Aborts on the first step failure; auto-blocks the failed version.                         |
 | `archanist rollback <component>`          | Walk the last attempt's completed steps in reverse and invoke each step's `rollback` handler.                                                               |
 | `archanist unblock <component> <version>` | Remove `<version>` from the component's blocklist so `update` can retry it.                                                                                 |
-| `archanist sandbox run <component>`       | Rehearse the update in the component's `[sandbox]` (see [recipes.md](recipes.md#sandbox)): start services, lay down the baseline once, run the update.     |
+| `archanist sandbox run <component>`       | Rehearse the update in the component's `[sandbox]` (see [recipes.md](recipes.md#sandbox)): start services, lay down the baseline once, run the update.      |
 | `archanist sandbox rollback <component>`  | Roll back the last sandbox attempt.                                                                                                                         |
 | `archanist sandbox reset <component>`     | Remove the sandbox's containers, network, and `<base_dir>/sandbox/<component>/` directory.                                                                  |
 | `archanist step-kinds`                    | List all built-in step type names.                                                                                                                          |
@@ -62,12 +62,22 @@ For each component (all, or the one named on the command line):
 5. Start a new `UpdateAttempt` in state with one `StepRun` slot per
    configured step (all `Pending`). Persist.
 6. For each step: mark `Running`, persist, invoke `apply`, on success
-   mark `Done` with the outcome payload, persist.
+   mark `Done` with the outcome payload, persist. After each completed
+   step the component's recipe file is re-read. If it changed, the
+   remaining steps and `[vars]` come from the new version only when a
+   [`recipe_sync`](steps.md#recipe_sync) with `reload = true` asked for
+   it (see that step for how an older recipe hands over). The run then
+   continues after the same step id, skipping steps it already
+   completed. Any other change is logged as a warning and applies from
+   the next run.
 7. On success at end: mark attempt `Success`, set `previous_version =
    current_version`, `current_version = latest`.
 8. On step failure: mark the running step `Failed` with the error
    message, mark attempt `Failed`, add `latest` to the blocklist,
    propagate the error to the CLI.
+9. After a successful self-update (see [Self-update](#self-update)),
+   stop: the remaining components are left for the next `update`, which
+   runs on the new binary.
 
 Rollback is **not** automatic. Run `archanist rollback` explicitly.
 
@@ -179,12 +189,13 @@ myapp: no completed steps in last attempt, nothing to roll back
 | `download`      | With `backup = true` (default), restores the previous `dest` from the snapshot, or deletes it if the download created it. With `backup = false`, nothing (labeled `(no-op)`).                                                                                                                                                                                                                  |
 | `http_health`   | Nothing (labeled `(no-op)`).                                                                                                                                                                                                                                                                                                                                                                   |
 | `copy_files`    | With `backup = true` (default), restores every overwritten destination file and deletes every file this step created. With `backup = false`, nothing (labeled `(no-op)`).                                                                                                                                                                                                                      |
+| `recipe_sync`   | With `backup = true` (default), restores every recipe this step overwrote and deletes every recipe it added. With `backup = false`, nothing (labeled `(no-op)`).                                                                                                                                                                                                                               |
 | `config_merge`  | With `backup = true` (default), restores `target` to its pre-merge contents. With `backup = false`, nothing (labeled `(no-op)`).                                                                                                                                                                                                                                                               |
 | `parse_text`    | Nothing (labeled `(no-op)`).                                                                                                                                                                                                                                                                                                                                                                   |
 | `db_migrate`    | If a `restore` list is set, runs each restore command in order to restore the pre-migration snapshot taken by `backup_command`, reverting every migration this attempt applied at once. Otherwise, if `rollback_command` is set, runs it once per stem this attempt applied, newest first, trimming each from the on-disk applied-migrations log. If neither is set, logs a warning and skips. |
 | `docker_swap`   | Pulls the previously-recorded image, stops and removes the container, then recreates it from the previous image. If no previous image was recorded (fresh install), logs a warning and skips.                                                                                                                                                                                                  |
 
-File-writing steps (`download`, `copy_files`, `config_merge`) snapshot
+File-writing steps (`download`, `copy_files`, `recipe_sync`, `config_merge`) snapshot
 the exact paths they touch under
 `<base_dir>/.archanist-backups/<component>/<step_id>/` before writing,
 keyed by step id. Each attempt wipes and recreates its own backup dir,
@@ -243,7 +254,9 @@ knobs cooperate:
 2. When the `docker_swap` self-step succeeds, its `StepOutcome.exit_after`
    is `true`. The pipeline persists state, marks the step `Done`, and
    returns.
-3. The archanist process exits cleanly.
+3. The archanist process exits cleanly. Components that come after the
+   self-component in the same `update` are not processed; run `update`
+   again to handle them with the new binary.
 4. The container orchestrator (docker, docker-compose, Kubernetes,
    whatever) restarts the container using the newly-pulled image.
 5. The new archanist boots against the same `state.toml` and `config.toml`

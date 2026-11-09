@@ -37,7 +37,7 @@
 //! ```
 
 use crate::interp::Env;
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result, bail};
 use regex::{Regex, RegexBuilder};
 use semver::Version;
@@ -146,8 +146,10 @@ fn default_join() -> String {
     "\n".to_string()
 }
 
-impl ParseTextStep {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for ParseTextStep {
+    const KIND: &'static str = "parse_text";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let step: ParseTextStep = body.try_into().context("invalid parse_text config")?;
         if step.extract.is_empty() {
             bail!("at least one `[[extract]]` rule is required");

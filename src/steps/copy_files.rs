@@ -8,7 +8,7 @@
 //! `backup = false` to skip this (rollback then becomes a no-op).
 
 use crate::steps::backup::{self, BackupBuilder};
-use crate::steps::{BoxFuture, Step, StepCtx, StepOutcome};
+use crate::steps::{BoxFuture, Step, StepCtx, StepKind, StepOutcome};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::path::Path;
@@ -32,8 +32,10 @@ fn default_backup() -> bool {
     true
 }
 
-impl CopyFiles {
-    pub fn from_body(body: toml::Value) -> Result<Self> {
+impl StepKind for CopyFiles {
+    const KIND: &'static str = "copy_files";
+
+    fn from_body(body: toml::Value) -> Result<Self> {
         let raw: CopyFilesRaw = body.try_into().context("invalid copy_files config")?;
         Ok(Self {
             src: raw.src,
