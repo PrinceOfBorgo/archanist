@@ -1,6 +1,7 @@
 # Changelog
 
-## [0.1.5-SNAPSHOT] - Unreleased
+## [0.1.5] - 2026-11-09
+### 🔧 Patch Release
 ### Added
 - `recipe_sync` step: installs component recipes into `components_dir` after checking that each one parses and only uses step types the running archanist supports, so a bad recipe never lands on disk. Writes are atomic and backed up for `rollback`. `reload = true` continues the running update with the component's new recipe.
 
